@@ -25,7 +25,7 @@ export function findMostConfidentIntentMeanStd(
     return NoneIntent
   }
 
-  const best = intents.find(x => x.confidence >= fixedThreshold)
+  const best = _.orderBy(intents, ['confidence'], 'desc').find(x => x.confidence >= fixedThreshold)
 
   if (best) {
     return best
@@ -51,4 +51,12 @@ export const createIntentMatcher = (intentName: string): ((pattern: string) => b
     const matcher = new RegExp(`^${escapeRegex(pattern)}$`, 'i')
     return matcher.test(intentName)
   }
+}
+
+export const getHighlightedIntentEntities = (intent: sdk.NLU.IntentDefinition): string[] => {
+  return _.chain(intent.slots)
+    .flatMap(s => s.entities)
+    .filter(e => e !== 'any')
+    .uniq()
+    .value()
 }

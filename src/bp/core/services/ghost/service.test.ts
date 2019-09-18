@@ -99,6 +99,9 @@ describe('Ghost Service', () => {
 
     it('Never has any pending revisions', async () => {
       dbDriver.listRevisions.mockReturnValue([{ file_path: 'abc', revision: 'rev' }]) // Even if DB driver says there are some revisions
+      diskDriver.readFile.mockImplementation(fileName => {
+        return fileName === `data/bots/${BOT_ID}/bot.config.json` && '{}'
+      })
       await ghost.forBot(BOT_ID).upsertFile('test', 'a.json', 'Hello') // And that we modify a file
 
       const revisions = await ghost.global().getPendingChanges()
@@ -106,7 +109,7 @@ describe('Ghost Service', () => {
     })
   })
 
-  describe('Using DB Driver', async () => {
+  describe('Using DB Driver', () => {
     const buildRev = n =>
       <FileRevision>{
         path: 'file',
@@ -117,14 +120,14 @@ describe('Ghost Service', () => {
       ghost.initialize(true)
     })
 
-    describe('read/write/delete', async () => {
+    describe('read/write/delete', () => {
       it('read files uses DB', async () => {
         dbDriver.readFile.mockImplementation(fileName => fileName)
         const content = await ghost.global().readFileAsString('test', 'my/test.json')
 
         expect(diskDriver.readFile).not.toHaveBeenCalled()
         expect(dbDriver.readFile).toHaveBeenCalled()
-        expect(content).toContain(`test${path.sep}my${path.sep}test.json`)
+        expect(content).toContain(`test/my/test.json`)
       })
       it('write uses DB', async () => {
         await ghost.global().upsertFile('test', 'test.json', 'my content')
@@ -148,7 +151,7 @@ describe('Ghost Service', () => {
       })
     })
 
-    describe('directory listing', async () => {
+    describe('directory listing', () => {
       it('reads files from the DB', async () => {
         await ghost.global().directoryListing('test', '*.json')
         expect(dbDriver.directoryListing).toHaveBeenCalled()
@@ -168,25 +171,9 @@ describe('Ghost Service', () => {
       })
     })
 
-    describe('sync', async () => {
-      it('if disk is not up to date, mark as dirty and dont sync disk files', async () => {
-        dbDriver.listRevisions.mockReturnValue(['1', '2', '3'].map(buildRev))
-        diskDriver.listRevisions.mockReturnValue(['1', '2'].map(buildRev)) // missing revision "3"
-        diskDriver.discoverTrackableFolders.mockReturnValue(['test', '.'])
-
-        await ghost.global().sync()
-
-        // We make sure the user is warned of the dirty state
-        expect(logger.warn).toHaveBeenCalled()
-
-        // Make sure we haven't synced anything
-        expect(diskDriver.readFile).not.toHaveBeenCalled()
-        expect(diskDriver.directoryListing).not.toHaveBeenCalled()
-        expect(dbDriver.upsertFile).not.toHaveBeenCalled()
-      })
+    describe('sync', () => {
       it('if disk is up to date, sync disk files', async () => {
         dbDriver.listRevisions.mockReturnValue(['1', '2', '3'].map(buildRev))
-        diskDriver.discoverTrackableFolders.mockReturnValue(['.'])
         diskDriver.listRevisions.mockReturnValue(['1', '2', '3'].map(buildRev)) // All synced!
         diskDriver.readFile.mockReturnValueOnce('FILE A CONTENT')
         diskDriver.readFile.mockReturnValueOnce('FILE D CONTENT')
@@ -221,7 +208,7 @@ describe('Ghost Service', () => {
       })
     })
 
-    describe('revisions', async () => {
+    describe('revisions', () => {
       it('empty when no revisions', async () => {
         dbDriver.listRevisions.mockReturnValue([])
         const pending = await ghost.global().getPendingChanges()

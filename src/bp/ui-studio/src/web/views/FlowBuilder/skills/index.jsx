@@ -33,10 +33,6 @@ class SkillsBuilder extends React.Component {
   state = this.resetState()
 
   componentDidMount() {
-    this.setState({ initialData: this.props.data })
-  }
-
-  componentDidMount() {
     this.setState({
       ...this.resetState(),
       moduleProps: this.buildModuleProps(this.props.data)
@@ -81,7 +77,8 @@ class SkillsBuilder extends React.Component {
           skillId: this.props.skillId,
           data: this.data,
           generatedFlow: generated.flow,
-          transitions: generated.transitions
+          transitions: generated.transitions,
+          location: this.props.location
         })
       }
     })
@@ -140,10 +137,20 @@ class SkillsBuilder extends React.Component {
       .then(({ data }) => data)
   }
 
+  findInstalledSkill() {
+    const skillId = this.props.skillId
+    if (!skillId) {
+      return
+    }
+
+    return find(this.props.installedSkills, x => x.id.toLowerCase() === skillId.toLowerCase())
+  }
+
   render() {
-    const skill = find(this.props.installedSkills, { id: this.props.skillId })
+    const skill = this.findInstalledSkill()
     const modalClassName = style['size-' + this.state.windowSize]
     const submitName = this.props.action === 'new' ? 'Insert' : 'Save'
+    const title = this.props.action === 'new' ? 'Insert a new skill' : 'Edit a skill'
 
     return (
       <Modal
@@ -154,7 +161,9 @@ class SkillsBuilder extends React.Component {
         backdrop="static"
       >
         <Modal.Header closeButton>
-          <Modal.Title>Insert a new skill | {skill && skill.name}</Modal.Title>
+          <Modal.Title>
+            {title} | {skill && skill.name}
+          </Modal.Title>
         </Modal.Header>
         <Modal.Body>
           {this.renderLoading()}

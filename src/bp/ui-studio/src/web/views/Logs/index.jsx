@@ -5,8 +5,6 @@ import _ from 'lodash'
 import classnames from 'classnames'
 import moment from 'moment'
 
-import PageHeader from '~/components/Layout/PageHeader'
-import ContentWrapper from '~/components/Layout/ContentWrapper'
 import { downloadBlob } from '~/util'
 
 import styles from './style.scss'
@@ -98,10 +96,7 @@ class LoggerView extends Component {
     const canLoadMore = this.state.limit < 500 && this.state.hasMore
 
     return (
-      <ContentWrapper>
-        <PageHeader>
-          <span>Logs</span>
-        </PageHeader>
+      <div>
         <Panel className={styles.panel}>
           <Panel.Body>
             <form className="pull-left">
@@ -124,12 +119,12 @@ class LoggerView extends Component {
             <ul className={styles.events}>{logs}</ul>
           </div>
           {canLoadMore && (
-            <div href="#" className={styles['logs-panel-footer']} onClick={this.loadMore}>
+            <div className={styles['logs-panel-footer']} onClick={this.loadMore}>
               Load more
             </div>
           )}
         </div>
-      </ContentWrapper>
+      </div>
     )
   }
 }

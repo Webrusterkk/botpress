@@ -33,7 +33,7 @@ export class DecisionEngine {
     @inject(TYPES.CMSService) private cms: CMSService
   ) {}
 
-  private readonly MIN_CONFIDENCE = process.env.BP_DECISION_MIN_CONFIENCE || 0.3
+  private readonly MIN_CONFIDENCE = process.env.BP_DECISION_MIN_CONFIENCE || 0.5
   private readonly MIN_NO_REPEAT = ms(process.env.BP_DECISION_MIN_NO_REPEAT || '20s')
 
   public async processEvent(sessionId: string, event: IO.IncomingEvent) {
@@ -89,12 +89,27 @@ export class DecisionEngine {
           .forBot(event.botId)
           .attachError(err)
           .error('An unexpected error occurred.')
-        await this._sendErrorMessage(event)
+
+        await this._processErrorFlow(sessionId, event)
       }
     }
 
     if (event.hasFlag(WellKnownFlags.FORCE_PERSIST_STATE)) {
       await this.stateManager.persist(event, false)
+    }
+  }
+
+  // Part of processing is duplicated, since we don't want to get in an infinite loop if there's an error in the error handler
+  private async _processErrorFlow(sessionId: string, event) {
+    try {
+      await this.dialogEngine.jumpTo(sessionId, event, 'error', 'entry')
+      const processedEvent = await this.dialogEngine.processEvent(sessionId, event)
+      await this.stateManager.persist(processedEvent, false)
+    } catch (err) {
+      this.logger
+        .forBot(event.botId)
+        .attachError(err)
+        .error('An error occurred in the error handler. Abandoning.')
     }
   }
 
@@ -129,14 +144,19 @@ export class DecisionEngine {
     }
   }
 
-  private async _sendSuggestion(reply: IO.Suggestion, sessionId, event): Promise<SendSuggestionResult> {
+  private async _sendSuggestion(
+    reply: IO.Suggestion,
+    sessionId,
+    event: IO.IncomingEvent
+  ): Promise<SendSuggestionResult> {
     const payloads = _.filter(reply.payloads, p => p.type !== 'redirect')
     const result: SendSuggestionResult = { executeFlows: true }
 
     if (payloads) {
-      await this.eventEngine.replyToEvent(event, payloads)
+      await this.eventEngine.replyToEvent(event, payloads, event.id)
 
       const message: IO.DialogTurnHistory = {
+        eventId: event.id,
         replyDate: new Date(),
         replySource: reply.source + ' ' + reply.sourceDetails,
         incomingPreview: event.preview,
@@ -146,6 +166,7 @@ export class DecisionEngine {
 
       result.executeFlows = false
       event.state.session.lastMessages.push(message)
+
       await this.stateManager.persist(event, true)
     }
 
@@ -155,19 +176,10 @@ export class DecisionEngine {
       result.executeFlows = true
     }
 
+    if (!result.executeFlows) {
+      this.onAfterEventProcessed && (await this.onAfterEventProcessed(event))
+    }
+
     return result
-  }
-
-  private async _sendErrorMessage(event) {
-    const config = await this.configProvider.getBotConfig(event.botId)
-    const element = _.get(config, 'dialog.error.args', {
-      text: "😯 Oops! We've got a problem. Please try something else while we're fixing it 🔨",
-      typing: true
-    })
-    const contentType = _.get(config, 'dialog.error.contentType', 'builtin_text')
-    const eventDestination = _.pick(event, ['channel', 'target', 'botId', 'threadId'])
-    const payloads = await this.cms.renderElement(contentType, element, eventDestination)
-
-    await this.eventEngine.replyToEvent(event, payloads)
   }
 }

@@ -1,5 +1,7 @@
-import { forceForwardSlashes } from 'core/misc/utils'
+import { filterByGlobs, forceForwardSlashes } from 'core/misc/utils'
+import { WrapErrorsWith } from 'errors'
 import { inject, injectable } from 'inversify'
+import _ from 'lodash'
 import nanoid from 'nanoid'
 import path from 'path'
 import { VError } from 'verror'
@@ -9,6 +11,7 @@ import { TYPES } from '../../types'
 
 import { FileRevision, StorageDriver } from '.'
 
+// TODO: Create a janitor that clears deleted files
 @injectable()
 export default class DBStorageDriver implements StorageDriver {
   constructor(@inject(TYPES.Database) private database: Database) {}
@@ -79,6 +82,14 @@ export default class DBStorageDriver implements StorageDriver {
     }
   }
 
+  @WrapErrorsWith(args => `[DB Storage] Error while moving file from "${args[0]}" to  "${args[1]}".`)
+  async moveFile(fromPath: string, toPath: string) {
+    await this.database
+      .knex('srv_ghost_files')
+      .update({ file_path: toPath })
+      .where({ file_path: fromPath })
+  }
+
   async deleteFile(filePath: string, recordRevision: boolean): Promise<void>
   async deleteFile(filePath: string): Promise<void>
   async deleteFile(filePath: string, recordRevision: boolean = true): Promise<void> {
@@ -108,18 +119,19 @@ export default class DBStorageDriver implements StorageDriver {
 
   async deleteDir(dirPath: string): Promise<void> {
     try {
-      // TODO: Consider soft-delete however you wont be able to create a bot with the
-      // same name as a bot that has been soft deleted until its completely gone from the DB.
       await this.database
         .knex('srv_ghost_files')
         .where('file_path', 'like', `${dirPath}%`)
-        .del()
+        .update({ deleted: true })
     } catch (e) {
       throw new VError(e, `[DB Storage] Error deleting folder "${dirPath}"`)
     }
   }
 
-  async directoryListing(folder: string): Promise<string[]> {
+  async directoryListing(
+    folder: string,
+    options: { excludes?: string | string[] } = { excludes: [] }
+  ): Promise<string[]> {
     try {
       let query = this.database
         .knex('srv_ghost_files')
@@ -132,9 +144,16 @@ export default class DBStorageDriver implements StorageDriver {
         query = query.andWhere('file_path', 'like', folder + '%')
       }
 
-      return query.then().map((x: any) => {
-        return forceForwardSlashes(path.relative(folder, x.file_path))
-      })
+      const paths = await query
+        .then<Iterable<any>>()
+        .map((x: any) => forceForwardSlashes(path.relative(folder, x.file_path)))
+
+      if (!options.excludes || !options.excludes.length) {
+        return paths
+      }
+
+      const ignoredGlobs = Array.isArray(options.excludes) ? options.excludes : [options.excludes]
+      return filterByGlobs(paths, path => path, ignoredGlobs)
     } catch (e) {
       throw new VError(e, `[DB Storage] Error listing directory content for folder "${folder}"`)
     }

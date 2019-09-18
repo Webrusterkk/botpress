@@ -1,17 +1,16 @@
 .insertNode {
   cursor: crosshair;
 
-  :global(.storm-diagrams-canvas) {
+  :global(.srd-diagram) {
     cursor: inherit;
   }
 }
 
 .floatingInfo {
   position: absolute;
-  top: 10px;
   left: 10px;
   opacity: 0.8;
-  z-index: 100;
+  z-index: 10;
 
   .insertMode button {
     margin-top: 10px;

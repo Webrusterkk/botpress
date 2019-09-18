@@ -1,7 +1,6 @@
-import { AuthUser } from 'core/misc/interfaces'
+import { ConverseConfig } from 'botpress/sdk'
+import { UniqueUser } from 'common/typings'
 import { IncidentRule } from 'core/services/alerting-service'
-
-export type AuthStrategy = 'basic' | 'saml' | 'ldap'
 
 export type BotpressCondition = '$isProduction' | '$isDevelopment'
 
@@ -12,21 +11,34 @@ export type ModuleConfigEntry = {
 
 export interface DialogConfig {
   /**
-   * Interval between executions of the janitor to check for stale sessions
+   * Interval between executions of the janitor that checks for stale contexts and sessions.
    * @default 10s
    */
   janitorInterval: string
   /**
-   * The delay before a stale session will get sweeped by the janitor
+   * Interval before a session's context expires.
+   * e.g. when the conversation is stale and has not reach the END of the flow.
+   * This will reset the position of the user in the flow.
    * @default 2m
    */
   timeoutInterval: string
   /**
-   * The delay before we consider that it is a new interaction (ex: different subject). We keep the user's last messages
-   * and variables in the session context to customize interactions.
+   * Interval before a session expires. e.g. when the user has not spoken for a while.
+   * The session including its variable will be deleted.
    * @default 30m
    */
   sessionTimeoutInterval: string
+}
+
+/**
+ * Configuration file definition for the Converse API
+ */
+export type ConverseConfig = {
+  /**
+   * The timeout of the converse API requests
+   * @default 5s
+   */
+  timeout: string
 }
 
 export interface LogsConfig {
@@ -111,8 +123,9 @@ export type BotpressConfig = {
      * locally and use NGINX as a reverse proxy to handle HTTPS. It should include the protocol and no trailing slash.
      * If unset, it will be constructed from the real host/port
      * @example https://botpress.io
+     * @default
      */
-    externalUrl?: string
+    externalUrl: string
     session: {
       /**
        * @default false
@@ -125,11 +138,25 @@ export type BotpressConfig = {
        */
       maxAge: string
     }
+    /**
+     * Configure the priority for establishing socket connections for webchat and studio users.
+     * If the first method is not supported, it will fallback on the second.
+     * If the first is supported but it fails with an error, it will not fallback.
+     * @default ["websocket","polling"]
+     */
+    socketTransports: string[]
   }
+  converse: ConverseConfig
   dialog: DialogConfig
   logs: LogsConfig
   modules: Array<ModuleConfigEntry>
   pro: {
+    /**
+     * These strategies are allowed to log on the Admin UI.
+     * Once a user is logged on, he still needs individual access to respective workspaces
+     * @default  ["default"]
+     */
+    collaboratorsAuthStrategies: string[]
     /**
      * When pro features are enabled, the license key must be provided
      * @default false
@@ -142,28 +169,6 @@ export type BotpressConfig = {
      * @default paste your license key here
      */
     licenseKey: string
-    auth: {
-      /**
-       * Defines which authentication strategy to use. When the strategy is changed, accounts created before may no longer log in.
-       * @default basic
-       */
-      strategy: AuthStrategy
-      /**
-       * Defines custom options based on the chosen authentication strategy
-       */
-      options: AuthStrategySaml | AuthStrategyLdap | AuthStrategyBasic | undefined
-      /**
-       * Maps the values returned by your provider to Botpress user parameters.
-       * @example fieldMapping: { email: 'emailAddress', fullName: 'givenName' }
-       */
-      fieldMapping: FieldMapping
-      /**
-       * When enabled, users are able to register new accounts by themselves. For example, if you use the SAML strategy and this is enabled,
-       * any user able to sign in using your SAML provider will create automatically an account on Botpress.
-       * @default false
-       */
-      allowSelfSignup: boolean
-    }
     monitoring: MonitoringConfig
     /**
      * The alert service is an extension of the monitoring service. The monitoring collects data, while the alert service
@@ -186,7 +191,7 @@ export type BotpressConfig = {
    * An array of e-mails of users which will have root access to Botpress (manage users, server settings)
    * @example: [admin@botpress.io]
    */
-  superAdmins: string[]
+  superAdmins: UniqueUser[]
   /**
    * When enabled, Botpress collects anonymous data about the bot's usage
    * @default true
@@ -213,9 +218,9 @@ export type BotpressConfig = {
   fileUpload: {
     /**
      * Maximum file size for media files upload (in mb)
-     * @default 10
+     * @default 10mb
      */
-    maxFileSize: number
+    maxFileSize: string
     /**
      * The list of allowed extensions for media file uploads
      * @default ["image/jpeg","image/png","image/gif"]
@@ -239,6 +244,19 @@ export type BotpressConfig = {
    * @default false
    */
   autoRevision: boolean
+  eventCollector: EventCollectorConfig
+  /**
+   * @default { "default": { "type": "basic", "allowSelfSignup": false, "options": { "maxLoginAttempt": 0} }}
+   */
+  authStrategies: {
+    [strategyId: string]: AuthStrategy
+  }
+  /**
+   * Displays the "Powered by Botpress" under the webchat.
+   * Help us spread the word, enable this to show your support !
+   * @default true
+   */
+  showPoweredBy: boolean
 }
 
 export interface ExternalAuthConfig {
@@ -286,6 +304,32 @@ export type RetentionPolicy = {
   [key: string]: string
 }
 
+export type AuthStrategyType = 'basic' | 'saml' | 'ldap'
+
+export interface AuthStrategy {
+  readonly id: string
+  /**
+   * Defines which authentication strategy to use. When the strategy is changed, accounts created before may no longer log in.
+   * @default basic
+   */
+  type: AuthStrategyType
+  /**
+   * Defines custom options based on the chosen authentication strategy
+   */
+  options: AuthStrategySaml | AuthStrategyLdap | AuthStrategyBasic | undefined
+  /**
+   * Maps the values returned by your provider to Botpress user parameters.
+   * @example fieldMapping: { email: 'emailAddress', fullName: 'givenName' }
+   */
+  fieldMapping?: FieldMapping
+  /**
+   * When enabled, users are able to register new accounts by themselves. For example, if you use the SAML strategy and this is enabled,
+   * any user able to sign in using your SAML provider will create automatically an account on Botpress.
+   * @default false
+   */
+  allowSelfSignup: boolean
+}
+
 export interface AuthStrategyBasic {
   /**
    * The maximum number of wrong passwords the user can enter before his account is locked out.
@@ -318,11 +362,15 @@ export interface AuthStrategyBasic {
   requireComplexPassword?: boolean
 }
 
+/**
+ *  SAML Options, identical to the "passeport-saml" NPM library
+ *  @see https://github.com/bergie/passport-saml
+ */
 export interface AuthStrategySaml {
   /**
    * This is the page of the external SAML IdP where users will login
    */
-  authEndpoint: string
+  entryPoint: string
   /**
    * The callback url is called by the SAML provider with the payload. The path provided here is absolute.
    * @default http://localhost:3000/admin/login-callback
@@ -344,7 +392,7 @@ export interface AuthStrategySaml {
    * The string should be provided as one line (use \n for new lines)
    * @default <paste PEM certificate>
    */
-  certificate: string
+  cert: string
   /**
    * Change if there is a significant time difference between this server and your identity provider
    * @default 5000
@@ -376,7 +424,7 @@ export interface AuthStrategyLdap {
   certificates: string[]
 }
 
-export type FieldMapping = { [key in keyof Partial<AuthUser>]?: string }
+export type FieldMapping = { [bpAttribute: string]: string }
 
 export interface MonitoringConfig {
   /**
@@ -428,4 +476,35 @@ export interface AlertingConfig {
    * is called with the incident.
    */
   rules: IncidentRule[]
+}
+
+export interface EventCollectorConfig {
+  /**
+   * When enabled, incoming and outgoing events will be saved on the database.
+   * It is required for some modules to work proprely (eg: history, testing, developer tools on channel web)
+   * @default true
+   */
+  enabled: boolean
+  /**
+   * Events are batched then sent to the database. Change the delay to save them more frequently or not.
+   * @default 1s
+   */
+  collectionInterval: string
+  /**
+   * The duration for which events will be kept in the database
+   * @default 30d
+   */
+  retentionPeriod: string
+  /**
+   * Specify an array of event types that won't be persisted to the database. For example, typing events and visits
+   * may not provide you with useful informations
+   * @default ["visit","typing"]
+   */
+  ignoredEventTypes: string[]
+  /**
+   * Specify an array of properties that will be stripped from the event before being saved. For example, the "state" property of the event
+   * contains a lot of details about the user session (context, attributes, etc) and may not be useful in some cases.
+   * @default []
+   */
+  ignoredEventProperties: string[]
 }

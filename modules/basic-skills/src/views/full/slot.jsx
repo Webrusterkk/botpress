@@ -39,7 +39,8 @@ export class Slot extends React.Component {
         selectedIntentOption: { value: data.intent, label: data.intent },
         selectedActionOption: data.validationAction && { value: data.validationAction, label: data.validationAction },
         contentElement: data.contentElement,
-        notFoundElement: data.notFoundElement
+        notFoundElement: data.notFoundElement,
+        maxRetryAttempts: Number(data.retryAttempts) || 3
       })
     }
   }
@@ -56,7 +57,7 @@ export class Slot extends React.Component {
         validationAction: this.state.selectedActionOption && this.state.selectedActionOption.value,
         intent: intent && intent.name,
         slotName: slot && slot.name,
-        entity: slot && slot.entity
+        entities: slot && slot.entities
       }
 
       this.props.onDataChanged && this.props.onDataChanged(data)

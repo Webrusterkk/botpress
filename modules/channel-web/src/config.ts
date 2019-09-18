@@ -32,6 +32,7 @@ export interface Config {
    */
   maxMessageLength?: number
   /**
+   * @deprecated Deprecated in favor of infoPage.  Remove in >= 12
    * @default false
    */
   showBotInfoPage: boolean
@@ -40,4 +41,19 @@ export interface Config {
    * @default ./uploads
    */
   fileUploadPath: string
+  /**
+   * The bot information page in the web chat
+   */
+  infoPage: {
+    /**
+     * @default false
+     */
+    enabled: boolean
+    description: string
+  }
+  /**
+   * The number of messages that are displayed in the chat history
+   * @default 20
+   */
+  maxMessagesHistory?: number
 }

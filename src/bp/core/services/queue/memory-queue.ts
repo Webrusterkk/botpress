@@ -38,12 +38,19 @@ export default class MemoryQueue implements Queue {
 
   drain = () => {
     if (this._queue.length > 0) {
+      // tslint:disable-next-line: no-floating-promises
       this.tick()
     }
   }
 
   isEmpty() {
     return !this._queue.length
+  }
+
+  isEmptyForJob(job: Job) {
+    const jobQueueId = this.getQueueId(job)
+    const subqueueLength = this._queue.filter(item => this.getQueueId(item.job) === jobQueueId).length
+    return !subqueueLength
   }
 
   getQueueId(job: Job): string {
@@ -58,7 +65,7 @@ export default class MemoryQueue implements Queue {
     } else {
       this._queue.push(jobWrapped)
     }
-    this.tick()
+    setImmediate(() => this.tick())
   }
 
   async dequeue() {
@@ -92,6 +99,7 @@ export default class MemoryQueue implements Queue {
       this.logger.attachError(err).warn(`${this.name} queue failed to process job: ${err.message}`)
 
       if (retries + 1 <= this._options.retries) {
+        // tslint:disable-next-line: no-floating-promises
         this.enqueue(job, retries + 1, true)
       } else {
         this.logger.error(
@@ -101,7 +109,7 @@ export default class MemoryQueue implements Queue {
     } finally {
       delete this._lock[queueId]
       if (this._queue.length) {
-        this.tick()
+        setImmediate(() => this.tick())
       }
     }
   }

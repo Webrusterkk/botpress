@@ -14,8 +14,8 @@ body {
 }
 
 * {
-  box-sizing: border-box;
-  outline: none;
+  box-sizing: border-box !important;
+  outline: none !important;
 }
 
 .bpw-from-user .bpw-chat-bubble {
@@ -183,6 +183,11 @@ body {
   margin-bottom: 2px;
 }
 
+.bpw-message-timestamp {
+  font-size: 0.6rem;
+  float: right;
+}
+
 .bpw-from-user {
   padding-right: 0;
 }
@@ -264,6 +269,14 @@ body {
   padding: 0.5rem 0.75rem;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.bpw-from-bot .bpw-bubble-highlight {
+  background-color: rgba(255, 192, 114, 0.25);
+}
+
+.bpw-from-user .bpw-bubble-highlight {
+  background-color: #ffa73a;
 }
 
 .bpw-bubble-session_reset {
@@ -509,13 +522,13 @@ body {
 .bpw-composer {
   border-top-width: 1px;
   border-top-style: solid;
-  border-top-color: #000000;
+  border-top-color: #aaaaaa;
   position: relative;
   padding: 0.5rem 0 0;
   background: rgba(255, 255, 255, 0.9);
   transition: border 0.3s ease;
   outline: none;
-  padding-bottom: 0.75rem;
+  padding-bottom: 0.5rem;
 }
 
 .bpw-composer textarea {
@@ -524,11 +537,35 @@ body {
   width: 100%;
   resize: none;
   line-height: 1.2;
-  height: 43px;
+  height: 50px;
   border: none;
   font-size: 1rem;
   padding: 0.75rem 1rem;
+  padding-right: 60px;
   margin-bottom: 0.5rem;
+}
+
+.bpw-powered {
+  text-align: right;
+  border-top: 1px solid #aaaaaa;
+  padding: 2px 5px 2px 0;
+}
+
+.bpw-send-button {
+  position: absolute;
+  right: 25px;
+  bottom: 28px;
+  border: none;
+  border-radius: 5px;
+  background: #fff;
+  padding: 5px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.bpw-send-button:hover {
+  background: #d8d8d8;
 }
 
 /** HEADER STUFF */
@@ -623,6 +660,7 @@ body {
   vertical-align: middle;
   cursor: pointer;
   fill: #bbb;
+  width: 15px;
 }
 
 .bpw-header-icon :hover {
@@ -678,6 +716,94 @@ body {
   background-color: #ff5d5d;
   box-shadow: 0 0 4px 0 rgba(0, 0, 0, 0.4);
 }
+
+/** BOT INFORMATION PAGE - START */
+
+.bpw-botinfo-container {
+  margin: 0 auto;
+  max-width: 800px;
+  width: 100%;
+  text-align: center;
+  color: #1e1e1e;
+  overflow-y: auto;
+}
+
+.bpw-botinfo-cover-picture-wrapper {
+  height: 50%;
+  overflow: hidden;
+}
+
+.bpw-botinfo-cover-picture {
+  width: 100%;
+  object-fit: cover;
+}
+
+.bpw-botinfo-container button,
+.bpw-botinfo-container a {
+  font-size: 0.9em;
+  color: rgb(102, 102, 102);
+  text-decoration: none;
+}
+
+.bpw-botinfo-summary {
+  margin-top: -32px;
+  border-bottom: solid 1px rgba(0, 0, 0, 0.1);
+  box-shadow: 0px 4px 5px -5px #ccc;
+}
+
+.bpw-botinfo-description {
+  margin-top: 0.4em;
+  margin-bottom: 1em;
+}
+
+.bpw-botinfo-summary h3 {
+  margin: 0;
+}
+
+.bpw-botinfo-links {
+  border-bottom: solid 1px rgba(0, 0, 0, 0.1);
+}
+
+.bpw-botinfo-link {
+  padding-left: 25%;
+  display: flex;
+  margin: 20px 0;
+}
+
+.bpw-botinfo-link i {
+  margin-right: 10px;
+}
+
+.bpw-botinfo-terms {
+  padding: 0px 20px;
+  text-align: left;
+}
+
+.bpw-botinfo-terms a {
+  display: inline-block;
+  width: 100%;
+  line-height: 2.5;
+  border-bottom: solid 1px rgba(0, 0, 0, 0.1);
+}
+
+.bpw-botinfo-start-button {
+  font: inherit;
+  color: inherit;
+  background-color: transparent;
+  cursor: pointer;
+  border-radius: 20px;
+  line-height: 24px;
+  padding: 5px 10px;
+  margin-top: 25px;
+  border: 1px solid rgb(100, 100, 100);
+}
+
+.bpw-botinfo-start-button:focus {
+  border: 1px solid black;
+  color: black;
+}
+
+/** BOT INFORMATION PAGE - END */
 
 /** TYPING ANIMATIIONS */
 @keyframes typingAnimation {
@@ -739,6 +865,10 @@ body {
   animation-iteration-count: 1;
 }
 
+.bpw-anim-none {
+  visibility: visible;
+}
+
 @keyframes slideInRight {
   0% {
     visibility: visible;
@@ -777,4 +907,8 @@ body {
     visibility: hidden;
     transform: translateX(100%);
   }
+}
+
+.bpw-mobx-tools {
+  visibility: hidden;
 }

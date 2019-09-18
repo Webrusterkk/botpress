@@ -26,7 +26,7 @@ export class LogsJanitor extends Janitor {
     super(logger)
   }
 
-  @Memoize
+  @Memoize()
   private async getBotpresConfig(): Promise<BotpressConfig> {
     return this.configProvider.getBotpressConfig()
   }
@@ -51,7 +51,7 @@ export class LogsJanitor extends Janitor {
       const expiration = moment()
         .subtract(ms(_.get(botConfig, 'logs.expiration') || globalLogsExpiryTime))
         .toDate()
-      this.logsService.deleteExpiredLogs(botId, expiration)
+      return this.logsService.deleteExpiredLogs(botId, expiration)
     })
   }
 }

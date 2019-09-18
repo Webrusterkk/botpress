@@ -1,24 +1,26 @@
 /*---------------------------------------------------------------------------------------------
-*  Copyright (c) Botpress, Inc. All rights reserved.
-*  Licensed under the AGPL-3.0 license. See license.txt at project root for more information.
-*--------------------------------------------------------------------------------------------*/
+ *  Copyright (c) Botpress, Inc. All rights reserved.
+ *  Licensed under the AGPL-3.0 license. See license.txt at project root for more information.
+ *--------------------------------------------------------------------------------------------*/
 
 import { Logger, RouterOptions } from 'botpress/sdk'
 import { Serialize } from 'cerialize'
 import { gaId, machineUUID } from 'common/stats'
+import { FlowView } from 'common/typings'
 import { BotpressConfig } from 'core/config/botpress.config'
 import { ConfigProvider } from 'core/config/config-loader'
+import { asBytes } from 'core/misc/utils'
 import { GhostService } from 'core/services'
 import ActionService from 'core/services/action/action-service'
 import AuthService, { TOKEN_AUDIENCE } from 'core/services/auth/auth-service'
 import { BotService } from 'core/services/bot-service'
-import { FlowView } from 'core/services/dialog'
-import { FlowService } from 'core/services/dialog/flow/service'
+import { FlowService, MutexError } from 'core/services/dialog/flow/service'
 import { LogsService } from 'core/services/logs/service'
 import MediaService from 'core/services/media'
 import { NotificationsService } from 'core/services/notification/service'
+import { getSocketTransports } from 'core/services/realtime'
 import { WorkspaceService } from 'core/services/workspace-service'
-import { RequestHandler, Router, Express } from 'express'
+import { Express, RequestHandler, Router } from 'express'
 import { AppLifecycle, AppLifecycleEvents } from 'lifecycle'
 import _ from 'lodash'
 import moment from 'moment'
@@ -29,10 +31,11 @@ import { URL } from 'url'
 
 import { disableForModule } from '../conditionalMiddleware'
 import { CustomRouter } from '../customRouter'
+import { NotFoundError } from '../errors'
 import { checkTokenHeader, needPermissions } from '../util'
 
 const debugMedia = DEBUG('audit:action:media-upload')
-const DEFAULT_MAX_SIZE = 10 // mb
+const DEFAULT_MAX_SIZE = '10mb'
 
 export class BotsRouter extends CustomRouter {
   private actionService: ActionService
@@ -91,12 +94,16 @@ export class BotsRouter extends CustomRouter {
     // '___' is a non-valid botId, but here acts as for "all bots"
     // This is used in modules when they setup routes that work on a global level (they are not tied to a specific bot)
     // Check the 'sso-login' module for an example
-    if (req.params.botId === '___') {
+    if (req.params.botId === '___' || req.originalUrl.endsWith('env.js')) {
       return next()
     }
 
     const config = await this.configProvider.getBotConfig(req.params.botId)
-    if (config.private && !req.originalUrl.endsWith('env.js') && !this.mediaPathRegex.test(req.originalUrl)) {
+    if (config.disabled) {
+      return next(new NotFoundError('Bot is disabled'))
+    }
+
+    if (config.private && !this.mediaPathRegex.test(req.originalUrl)) {
       return this.checkTokenHeader(req, res, next)
     }
 
@@ -119,14 +126,19 @@ export class BotsRouter extends CustomRouter {
     }
   }
 
-  getNewRouter(path: string, options?: RouterOptions) {
+  getNewRouter(path: string, identity: string, options?: RouterOptions) {
     const router = Router({ mergeParams: true })
     if (_.get(options, 'checkAuthentication', true)) {
       router.use(this.checkTokenHeader)
+      router.use(this.needPermissions('write', identity))
     }
 
     if (!_.get(options, 'enableJsonBodyParser', true)) {
-      disableForModule('bodyParser', path)
+      disableForModule('bodyParserJson', path)
+    }
+
+    if (!_.get(options, 'enableUrlEncoderBodyParser', true)) {
+      disableForModule('bodyParserUrlEncoder', path)
     }
 
     const relPath = '/mod/' + path
@@ -177,6 +189,8 @@ export class BotsRouter extends CustomRouter {
           return res.sendStatus(404)
         }
 
+        const config = await this.configProvider.getBotpressConfig()
+
         const data = this.studioParams(botId)
         const liteEnv = `
               // Lite Views Specific
@@ -193,13 +207,16 @@ export class BotsRouter extends CustomRouter {
               // Common
               window.UUID = "${data.uuid}"
               window.ANALYTICS_ID = "${data.gaId}";
-              window.API_PATH = "/api/v1";
-              window.BOT_API_PATH = "/api/v1/bots/${botId}";
+              window.API_PATH = "${process.ROOT_PATH}/api/v1";
+              window.BOT_API_PATH = "${process.ROOT_PATH}/api/v1/bots/${botId}";
               window.BOT_ID = "${botId}";
               window.BOT_NAME = "${bot.name}";
-              window.BP_BASE_PATH = "/${app}/${botId}";
+              window.BP_BASE_PATH = "${process.ROOT_PATH}/${app}/${botId}";
               window.BOTPRESS_VERSION = "${data.botpress.version}";
               window.APP_NAME = "${data.botpress.name}";
+              window.SHOW_POWERED_BY = ${!!config.showPoweredBy};
+              window.BOT_LOCKED = ${!!bot.locked};
+              window.SOCKET_TRANSPORTS = ["${getSocketTransports(config).join('","')}"];
               ${app === 'studio' ? studioEnv : ''}
               ${app === 'lite' ? liteEnv : ''}
               // End
@@ -251,6 +268,18 @@ export class BotsRouter extends CustomRouter {
     )
 
     this.router.get(
+      '/workspaceBotsIds',
+      this.checkTokenHeader,
+      this.needPermissions('read', 'bot.information'),
+      this.asyncMiddleware(async (req, res) => {
+        const botsRefs = await this.workspaceService.getBotRefs(req.workspace)
+        const bots = await this.botService.findBotsByIds(botsRefs)
+
+        return res.send(bots && bots.filter(Boolean).map(x => ({ name: x.name, id: x.id })))
+      })
+    )
+
+    this.router.get(
       '/flows',
       this.checkTokenHeader,
       this.needPermissions('read', 'bot.flows'),
@@ -262,15 +291,57 @@ export class BotsRouter extends CustomRouter {
     )
 
     this.router.post(
-      '/flows',
+      '/flow',
       this.checkTokenHeader,
       this.needPermissions('write', 'bot.flows'),
       this.asyncMiddleware(async (req, res) => {
-        const botId = req.params.botId
-        const flowViews = <FlowView[]>req.body
+        const { botId } = req.params
+        const flow = <FlowView>req.body.flow
+        const userEmail = req.tokenUser!.email
 
-        await this.flowService.saveAll(botId, flowViews)
-        res.sendStatus(201)
+        await this.flowService.insertFlow(botId, flow, userEmail)
+
+        res.sendStatus(200)
+      })
+    )
+
+    this.router.put(
+      '/flow/:flowName',
+      this.checkTokenHeader,
+      this.needPermissions('write', 'bot.flows'),
+      this.asyncMiddleware(async (req, res) => {
+        const { botId, flowName } = req.params
+        const flow = <FlowView>req.body.flow
+        const userEmail = req.tokenUser!.email
+
+        if (_.has(flow, 'name') && flowName !== flow.name) {
+          await this.flowService.renameFlow(botId, flowName, flow.name, userEmail)
+        } else {
+          try {
+            await this.flowService.updateFlow(botId, flow, userEmail)
+          } catch (err) {
+            if (err.type && err.type === MutexError.name) {
+              res.send(423) // Mutex locked
+              return
+            }
+          }
+        }
+        res.sendStatus(200)
+      })
+    )
+
+    this.router.delete(
+      '/flow/:flowName',
+      this.checkTokenHeader,
+      this.needPermissions('write', 'bot.flows'),
+      this.asyncMiddleware(async (req, res) => {
+        const { botId, flowName } = req.params
+
+        const userEmail = req.tokenUser!.email
+
+        await this.flowService.deleteFlow(botId, flowName as string, userEmail)
+
+        res.sendStatus(200)
       })
     )
 
@@ -301,7 +372,7 @@ export class BotsRouter extends CustomRouter {
         cb(new Error(`Invalid mime type (${file.mimetype})`), false)
       },
       limits: {
-        fileSize: _.get(this.botpressConfig, 'fileUpload.maxFileSize', DEFAULT_MAX_SIZE) * 1000 * 1024
+        fileSize: asBytes(_.get(this.botpressConfig, 'fileUpload.maxFileSize', DEFAULT_MAX_SIZE))
       }
     }).single('file')
 

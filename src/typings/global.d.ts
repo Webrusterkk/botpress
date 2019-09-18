@@ -9,21 +9,32 @@ declare namespace NodeJS {
     printErrorDefault(err: Error): void
     DEBUG: IDebug
     require: ExtraRequire
+    rewire: (name: string) => string
+    printBotLog(botId: string, args: any[]): void
   }
 
   export interface Process {
     VERBOSITY_LEVEL: number
-    IS_PRODUCTION: boolean
+    IS_PRODUCTION: boolean // TODO: look to remove this
+    BPFS_STORAGE: 'database' | 'disk'
     APP_SECRET: string
+    /**
+     * Path to the global APP DATA folder, shared across all installations of Botpress Server
+     * Use this folder to store stuff you'd like to cache, like NLU language models etc
+     */
+    APP_DATA_PATH: string
     HOST: string
     PORT: number
     PROXY?: string
     EXTERNAL_URL: string
     LOCAL_URL: string
+    /** This is the subfolder where Botpress is located (ex: /botpress/). It is extracted from the external URL */
+    ROOT_PATH: string
     PROJECT_LOCATION: string
     LOADED_MODULES: { [module: string]: string }
     pkg: any
     IS_LICENSED: boolean
+    IS_PRO_AVAILABLE: boolean
     IS_PRO_ENABLED: boolean
     CLUSTER_ENABLED: boolean
     ASSERT_LICENSED: Function
@@ -31,6 +42,7 @@ declare namespace NodeJS {
     core_env: BotpressEnvironementVariables
     distro: OSDistribution
     BOTPRESS_EVENTS: EventEmitter
+    AUTO_MIGRATE: boolean
   }
 }
 
@@ -44,6 +56,9 @@ declare type PRO_FEATURES = 'seats'
 declare type BotpressEnvironementVariables = {
   /** Replace the path of the NodeJS Native Extensions for external OS-specific libraries such as fastText and CRFSuite */
   readonly NATIVE_EXTENSIONS_DIR?: string
+
+  /** Change the BPFS storage mechanism ("database" or "disk"). Defaults to "disk" */
+  readonly BPFS_STORAGE?: 'database' | 'disk'
 
   /**
    * Set this to true if you're exposing Botpress through a reverse proxy such as Nginx
@@ -62,6 +77,24 @@ declare type BotpressEnvironementVariables = {
    * @example bp:dialog:*,bp:nlu:intents:*
    */
   readonly DEBUG?: string
+
+  /**
+   * Overrides the auto-computed `process.APP_DATA_PATH` path
+   * @see Process.APP_DATA_PATH
+   */
+
+  readonly APP_DATA_PATH?: string
+
+  /**
+   * Truthy if running the official Botpress docker image
+   */
+  readonly BP_IS_DOCKER?: boolean
+
+  /**
+   * The max size of the in-memory, in-process cache.
+   * Defaults to '1gb'
+   */
+  readonly BP_MAX_MEMORY_CACHE_SIZE?: string
 }
 
 interface IDebug {
@@ -91,4 +124,8 @@ declare interface OSDistribution {
   codename: string
   /** The release number, for example 18.04 */
   release: string
+}
+
+declare interface Dic<T> {
+  [Key: string]: T
 }

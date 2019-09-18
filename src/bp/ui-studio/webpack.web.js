@@ -20,14 +20,16 @@ const webConfig = {
   },
   output: {
     path: path.resolve(__dirname, './public/js'),
-    publicPath: '/assets/ui-studio/public/js/',
+    publicPath: 'assets/ui-studio/public/js/',
     filename: '[name].[chunkhash].js'
   },
   resolve: {
-    extensions: ['.js', '.jsx', '.css'],
+    extensions: ['.js', '.jsx', '.tsx', '.ts', '.css'],
     alias: {
       '~': path.resolve(__dirname, './src/web'),
-      DOCS: path.resolve(__dirname, '../../../docs/guide/docs')
+      DOCS: path.resolve(__dirname, '../../../docs/guide/docs'),
+      common: path.resolve(__dirname, '../../../out/bp/common'),
+      'botpress/sdk': path.resolve(__dirname, '../sdk/botpress.d.ts')
     }
   },
   optimization: {
@@ -99,6 +101,7 @@ const webConfig = {
 
   module: {
     rules: [
+      { test: /\.tsx?$/, loader: 'ts-loader', exclude: /node_modules/ },
       {
         test: /\.md$/,
         use: [
@@ -128,6 +131,7 @@ const webConfig = {
         test: /\.styl$/,
         use: [
           { loader: 'style-loader' },
+          { loader: 'css-modules-typescript-loader' },
           {
             loader: 'css-loader',
             options: {
@@ -144,10 +148,12 @@ const webConfig = {
         test: /\.scss$/,
         use: [
           { loader: 'style-loader' },
+          { loader: 'css-modules-typescript-loader' },
           {
             loader: 'css-loader',
             options: {
               modules: true,
+              url: false,
               importLoaders: 1,
               localIdentName: '[name]__[local]___[hash:base64:5]'
             }

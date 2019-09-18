@@ -4,8 +4,9 @@ import { WrapErrorsWith } from 'errors'
 import fse from 'fs-extra'
 import { inject, injectable, tagged } from 'inversify'
 import { AppLifecycle, AppLifecycleEvents } from 'lifecycle'
-import _, { Partial } from 'lodash'
+import _ from 'lodash'
 import moment from 'moment'
+import ms from 'ms'
 import nanoid from 'nanoid'
 import path from 'path'
 import plur from 'plur'
@@ -13,7 +14,6 @@ import plur from 'plur'
 import { setDebugScopes } from '../debug'
 
 import { createForGlobalHooks } from './api'
-import { BotConfig } from './config/bot.config'
 import { BotpressConfig } from './config/botpress.config'
 import { ConfigProvider } from './config/config-loader'
 import Database, { DatabaseType } from './database'
@@ -22,6 +22,7 @@ import { ModuleLoader } from './module-loader'
 import HTTPServer from './server'
 import { GhostService } from './services'
 import { AlertingService } from './services/alerting-service'
+import AuthService from './services/auth/auth-service'
 import { BotService } from './services/bot-service'
 import { CMSService } from './services/cms'
 import { converseApiEvents } from './services/converse'
@@ -30,10 +31,13 @@ import { DialogEngine } from './services/dialog/dialog-engine'
 import { ProcessingError } from './services/dialog/errors'
 import { DialogJanitor } from './services/dialog/janitor'
 import { SessionIdFactory } from './services/dialog/session/id-factory'
+import { HintsService } from './services/hints'
 import { Hooks, HookService } from './services/hook/hook-service'
 import { LogsJanitor } from './services/logs/janitor'
+import { EventCollector } from './services/middleware/event-collector'
 import { EventEngine } from './services/middleware/event-engine'
 import { StateManager } from './services/middleware/state-manager'
+import { MigrationService } from './services/migration'
 import { MonitoringService } from './services/monitoring'
 import { NotificationsService } from './services/notification/service'
 import RealtimeService from './services/realtime'
@@ -52,9 +56,9 @@ export class Botpress {
   botpressPath: string
   configLocation: string
   modulesConfig: any
-  version: string
   config!: BotpressConfig | undefined
   api!: typeof sdk
+  _heartbeatTimer?: NodeJS.Timeout
 
   constructor(
     @inject(TYPES.Statistics) private stats: Statistics,
@@ -67,6 +71,7 @@ export class Botpress {
     @inject(TYPES.HTTPServer) private httpServer: HTTPServer,
     @inject(TYPES.ModuleLoader) private moduleLoader: ModuleLoader,
     @inject(TYPES.HookService) private hookService: HookService,
+    @inject(TYPES.HintsService) private hintsService: HintsService,
     @inject(TYPES.RealtimeService) private realtimeService: RealtimeService,
     @inject(TYPES.EventEngine) private eventEngine: EventEngine,
     @inject(TYPES.CMSService) private cmsService: CMSService,
@@ -84,9 +89,11 @@ export class Botpress {
     @inject(TYPES.WorkspaceService) private workspaceService: WorkspaceService,
     @inject(TYPES.BotService) private botService: BotService,
     @inject(TYPES.MonitoringService) private monitoringService: MonitoringService,
-    @inject(TYPES.AlertingService) private alertingService: AlertingService
+    @inject(TYPES.AlertingService) private alertingService: AlertingService,
+    @inject(TYPES.EventCollector) private eventCollector: EventCollector,
+    @inject(TYPES.AuthService) private authService: AuthService,
+    @inject(TYPES.MigrationService) private migrationService: MigrationService
   ) {
-    this.version = '12.0.1'
     this.botpressPath = path.join(process.cwd(), 'dist')
     this.configLocation = path.join(this.botpressPath, '/config')
   }
@@ -100,20 +107,23 @@ export class Botpress {
 
   private async initialize(options: StartOptions) {
     this.trackStart()
+    this.trackHeartbeat()
 
     setDebugScopes(process.core_env.DEBUG || (process.IS_PRODUCTION ? '' : 'bp:dialog'))
 
     this.config = await this.loadConfiguration()
     await this.createDatabase()
     await this.initializeGhost()
+    await this.restoreDebugScope()
 
     // Invalidating the configuration to force it to load it from the ghost if enabled
     this.config = await this.loadConfiguration(true)
 
     await AppLifecycle.setDone(AppLifecycleEvents.CONFIGURATION_LOADED)
-
     await this.checkJwtSecret()
     await this.loadModules(options.modules)
+    await this.migrationService.initialize()
+    await this.cleanDisabledModules()
     await this.initializeServices()
     await this.checkEditionRequirements()
     await this.deployAssets()
@@ -121,8 +131,21 @@ export class Botpress {
     await this.startServer()
     await this.discoverBots()
 
+    await AppLifecycle.setDone(AppLifecycleEvents.BOTPRESS_READY)
+
     this.api = await createForGlobalHooks()
     await this.hookService.executeHook(new Hooks.AfterServerStart(this.api))
+  }
+
+  async restoreDebugScope() {
+    if (await this.ghostService.global().fileExists('/', 'debug.json')) {
+      try {
+        const { scopes } = await this.ghostService.global().readFileAsObject('/', 'debug.json')
+        setDebugScopes(scopes.join(','))
+      } catch (err) {
+        this.logger.attachError(err).error(`Couldn't load debug scopes. Check the syntax of debug.json`)
+      }
+    }
   }
 
   async checkJwtSecret() {
@@ -131,7 +154,7 @@ export class Botpress {
     let appSecret = this.config.appSecret || this.config.jwtSecret
     if (!appSecret) {
       appSecret = nanoid(40)
-      this.configProvider.mergeBotpressConfig({ appSecret })
+      await this.configProvider.mergeBotpressConfig({ appSecret })
       this.logger.debug(`JWT Secret isn't defined. Generating a random key...`)
     }
 
@@ -146,12 +169,27 @@ export class Botpress {
         'Redis is enabled in your Botpress configuration. To use Botpress in a cluster, please upgrade to Botpress Pro.'
       )
     }
-    const nStage = (await this.workspaceService.getPipeline()).length
-    if (!process.IS_PRO_ENABLED && nStage > 1) {
-      throw new Error(
-        'Your pipeline has more than a single stage. To enable the pipeline feature, please upgrade to Botpress Pro.'
-      )
+
+    if (!process.IS_PRO_ENABLED) {
+      const workspaces = await this.workspaceService.getWorkspaces()
+      if (workspaces.length > 1) {
+        throw new Error(
+          'You have more than one workspace. To create unlimited workspaces, please upgrade to Botpress Pro.'
+        )
+      }
+
+      if (workspaces.length) {
+        for (const workspace of workspaces) {
+          const pipeline = await this.workspaceService.getPipeline(workspace.id)
+          if (pipeline && pipeline.length > 1) {
+            throw new Error(
+              'Your pipeline has more than a single stage. To enable the pipeline feature, please upgrade to Botpress Pro.'
+            )
+          }
+        }
+      }
     }
+
     const bots = await this.botService.getBots()
     bots.forEach(bot => {
       if (!process.IS_PRO_ENABLED && bot.languages && bot.languages.length > 1) {
@@ -177,7 +215,7 @@ export class Botpress {
 
   async deployAssets() {
     try {
-      const assets = path.resolve(process.PROJECT_LOCATION, 'assets')
+      const assets = path.resolve(process.PROJECT_LOCATION, 'data/assets')
       await copyDir(path.join(__dirname, '../ui-admin'), `${assets}/ui-admin`)
 
       // Avoids overwriting the folder when developping locally on the studio
@@ -214,25 +252,20 @@ export class Botpress {
       )
     }
 
-    let bots = await this.botService.getBots()
-    const pipeline = await this.workspaceService.getPipeline()
-    if (pipeline.length > 4) {
-      this.logger.warn('It seems like you have more than 4 stages in your pipeline, consider to join stages together.')
+    const bots = await this.botService.getBots()
+
+    for (const workspace of await this.workspaceService.getWorkspaces()) {
+      const pipeline = await this.workspaceService.getPipeline(workspace.id)
+      if (pipeline && pipeline.length > 4) {
+        this.logger.warn(
+          `It seems like you have more than 4 stages in your pipeline, consider to join stages together (workspace: ${
+            workspace.id
+          })`
+        )
+      }
     }
 
-    // @deprecated > 11: bot will always include default pipeline stage & must have a default language
-    const botConfigChanged = await this._ensureBotConfigCorrect(bots, pipeline[0])
-    if (botConfigChanged) {
-      bots = await this.botService.getBots()
-    }
-
-    const disabledBots = [...bots.values()]
-      .filter(b => {
-        const isStage0 = b.pipeline_status.current_stage.id === pipeline[0].id
-        const stageExist = pipeline.findIndex(s => s.id === b.pipeline_status.current_stage.id) !== -1
-        return b.disabled || ((!process.IS_PRO_ENABLED && !isStage0) || !stageExist)
-      })
-      .map(b => b.id)
+    const disabledBots = [...bots.values()].filter(b => b.disabled).map(b => b.id)
     const botsToMount = _.without(botsRef, ...disabledBots, ...deleted)
 
     await Promise.map(botsToMount, botId => this.botService.mountBot(botId))
@@ -240,43 +273,17 @@ export class Botpress {
 
   @WrapErrorsWith('Error initializing Ghost Service')
   async initializeGhost(): Promise<void> {
-    this.ghostService.initialize(process.IS_PRODUCTION)
-    await this.ghostService.global().sync()
-  }
+    const useDbDriver = process.BPFS_STORAGE === 'database'
+    this.ghostService.initialize(useDbDriver)
+    const global = await this.ghostService.global().directoryListing('/')
 
-  // @deprecated > 11: bot will always include default pipeline stage
-  private async _ensureBotConfigCorrect(bots: Map<string, BotConfig>, stage: sdk.Stage): Promise<Boolean> {
-    let hasChanges = false
-    await Promise.mapSeries(bots.values(), async bot => {
-      const updatedConfig: any = {}
+    if (useDbDriver && _.isEmpty(global)) {
+      this.logger.info('Syncing data/global/ to database')
+      await this.ghostService.global().sync()
 
-      if (!bot.defaultLanguage) {
-        this.logger.warn(
-          `Bot "${
-            bot.id
-          }" doesn't have a default language, which is now required, go to your admin console to fix this issue.`
-        )
-        updatedConfig.disabled = true
-      }
-
-      if (!bot.pipeline_status) {
-        updatedConfig.locked = false
-        updatedConfig.pipeline_status = {
-          current_stage: {
-            id: stage.id,
-            promoted_by: 'system',
-            promoted_on: new Date()
-          }
-        }
-      }
-
-      if (Object.getOwnPropertyNames(updatedConfig).length) {
-        hasChanges = true
-        await this.configProvider.mergeBotConfig(bot.id, updatedConfig)
-      }
-    })
-
-    return hasChanges
+      this.logger.info('Syncing data/bots/ to database')
+      await this.ghostService.bots().sync()
+    }
   }
 
   private async initializeServices() {
@@ -285,8 +292,10 @@ export class Botpress {
 
     await this.loggerFilePersister.initialize(this.config!, await this.loggerProvider('LogFilePersister'))
 
+    await this.authService.initialize()
     await this.workspaceService.initialize()
     await this.cmsService.initialize()
+    await this.eventCollector.initialize(this.database)
 
     this.eventEngine.onBeforeIncomingMiddleware = async (event: sdk.IO.IncomingEvent) => {
       await this.stateManager.restore(event)
@@ -305,6 +314,7 @@ export class Botpress {
     }
 
     this.eventEngine.onBeforeOutgoingMiddleware = async (event: sdk.IO.IncomingEvent) => {
+      this.eventCollector.storeEvent(event)
       await this.hookService.executeHook(new Hooks.BeforeOutgoingMiddleware(this.api, event))
     }
 
@@ -317,18 +327,23 @@ export class Botpress {
     }
 
     this.decisionEngine.onAfterEventProcessed = async (event: sdk.IO.IncomingEvent) => {
+      this.eventCollector.storeEvent(event)
       await this.hookService.executeHook(new Hooks.AfterEventProcessed(this.api, event))
     }
 
-    this.dataRetentionService.initialize()
+    await this.dataRetentionService.initialize()
 
     const dialogEngineLogger = await this.loggerProvider('DialogEngine')
-    this.dialogEngine.onProcessingError = err => {
+    this.dialogEngine.onProcessingError = (err, hideStack?) => {
       const message = this.formatProcessingError(err)
-      dialogEngineLogger
-        .forBot(err.botId)
-        .attachError(err)
-        .warn(message)
+      if (!hideStack) {
+        dialogEngineLogger
+          .forBot(err.botId)
+          .attachError(err)
+          .warn(message)
+      } else {
+        dialogEngineLogger.forBot(err.botId).warn(message)
+      }
     }
 
     this.notificationService.onNotification = notification => {
@@ -343,10 +358,14 @@ export class Botpress {
     await this.dialogJanitor.start()
     await this.monitoringService.start()
     await this.alertingService.start()
+    await this.eventCollector.start()
 
     if (this.config!.dataRetention) {
       await this.dataRetentionJanitor.start()
     }
+
+    // tslint:disable-next-line: no-floating-promises
+    this.hintsService.refreshAll()
 
     await AppLifecycle.setDone(AppLifecycleEvents.SERVICES_READY)
   }
@@ -376,13 +395,20 @@ export class Botpress {
     this.logger.info(`Loaded ${loadedModules.length} ${plur('module', loadedModules.length)}`)
   }
 
+  private async cleanDisabledModules() {
+    const config = await this.configProvider.getBotpressConfig()
+    const disabledModules = config.modules.filter(m => !m.enabled).map(m => path.basename(m.location))
+
+    await this.moduleLoader.disableModuleResources(disabledModules)
+  }
+
   private async startServer() {
     await this.httpServer.start()
     AppLifecycle.setDone(AppLifecycleEvents.HTTP_SERVER_READY)
   }
 
-  private startRealtime() {
-    this.realtimeService.installOnHttpServer(this.httpServer.httpServer)
+  private async startRealtime() {
+    await this.realtimeService.installOnHttpServer(this.httpServer.httpServer)
   }
 
   private formatProcessingError(err: ProcessingError) {
@@ -398,5 +424,28 @@ Node: ${err.nodeName}`
       'start',
       `version: ${process.BOTPRESS_VERSION}, pro: ${process.IS_PRO_ENABLED}, licensed: ${process.IS_LICENSED}`
     )
+  }
+
+  private trackHeartbeat() {
+    if (this._heartbeatTimer) {
+      clearInterval(this._heartbeatTimer)
+    }
+
+    this._heartbeatTimer = setInterval(async () => {
+      let nbBots = 'N/A'
+      let nbCollabs = 'N/A'
+      try {
+        nbBots = (await this.botService.getBotsIds()).length.toString()
+        nbCollabs = (await this.workspaceService.listUsers()).length.toString()
+      } finally {
+        this.stats.track(
+          'server',
+          'heartbeat',
+          `version: ${process.BOTPRESS_VERSION}, pro: ${process.IS_PRO_ENABLED}, licensed: ${
+            process.IS_LICENSED
+          }, bots: ${nbBots}, collaborators: ${nbCollabs}`
+        )
+      }
+    }, ms('2m'))
   }
 }

@@ -21,25 +21,49 @@ function render(data) {
 }
 
 function renderMessenger(data) {
-  return [
-    {
+  const events = []
+
+  if (data.typing) {
+    events.push({
       type: 'typing',
       value: data.typing
-    },
+    })
+  }
+
+  return [
+    ...events,
     {
       text: data.text
     }
   ]
 }
 
-function renderElement(data, channel) {
-  if (channel === 'web' || channel === 'api' || channel === 'telegram') {
-    return render(data)
-  } else if (channel === 'messenger') {
-    return renderMessenger(data)
+function renderTeams(data) {
+  const events = []
+
+  if (data.typing) {
+    events.push({
+      type: 'typing'
+    })
   }
 
-  return [] // TODO
+  return [
+    ...events,
+    {
+      type: 'message',
+      text: data.text
+    }
+  ]
+}
+
+function renderElement(data, channel) {
+  if (channel === 'messenger') {
+    return renderMessenger(data)
+  } else if (channel === 'teams') {
+    return renderTeams(data)
+  } else {
+    return render(data)
+  }
 }
 
 module.exports = {

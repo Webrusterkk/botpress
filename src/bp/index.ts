@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events'
+import { boolean } from 'joi'
 
 const yn = require('yn')
 const path = require('path')
@@ -6,6 +7,7 @@ const fs = require('fs')
 const metadataContent = require('../../metadata.json')
 const getos = require('./common/getos')
 const { Debug } = require('./debug')
+const { getAppDataPath } = require('./core/misc/app_data')
 
 const printPlainError = err => {
   console.log('Error starting botpress')
@@ -32,10 +34,18 @@ function stripDeprecationWrite(this: Function): boolean {
     return (arguments[2] || arguments[1])()
   }
 
-  return originalWrite.apply(this, arguments)
+  return originalWrite.apply(this, (arguments as never) as [string])
+}
+
+if (process.env.APP_DATA_PATH) {
+  process.APP_DATA_PATH = process.env.APP_DATA_PATH
+} else {
+  process.APP_DATA_PATH = getAppDataPath()
 }
 
 process.BOTPRESS_EVENTS = new EventEmitter()
+process.BOTPRESS_EVENTS.setMaxListeners(1000)
+
 process.LOADED_MODULES = {}
 process.PROJECT_LOCATION = process.pkg
   ? path.dirname(process.execPath) // We point at the binary path
@@ -54,7 +64,7 @@ process.on('uncaughtException', err => {
 
 try {
   require('dotenv').config({ path: path.resolve(process.PROJECT_LOCATION, '.env') })
-  process.core_env = process.env
+  process.core_env = process.env as BotpressEnvironementVariables
 
   const argv = require('yargs')
     .command(
@@ -66,25 +76,35 @@ try {
           description: 'Whether you want to run in production mode or not',
           default: false,
           type: 'boolean'
+        },
+        autoMigrate: {
+          description:
+            'When this flag is set, Botpress will automatically migrate your content and configuration files when upgrading',
+          default: false,
+          type: 'boolean'
         }
       },
       argv => {
-        process.IS_PRODUCTION = argv.production || yn(process.env.BP_PRODUCTION)
+        process.IS_PRODUCTION = argv.production || yn(process.env.BP_PRODUCTION) || yn(process.env.CLUSTER_ENABLED)
+        process.BPFS_STORAGE = process.core_env.BPFS_STORAGE || 'disk'
 
         let defaultVerbosity = process.IS_PRODUCTION ? 0 : 2
         if (!isNaN(Number(process.env.VERBOSITY_LEVEL))) {
           defaultVerbosity = Number(process.env.VERBOSITY_LEVEL)
         }
 
+        process.AUTO_MIGRATE =
+          process.env.AUTO_MIGRATE === undefined ? yn(argv.autoMigrate) : yn(process.env.AUTO_MIGRATE)
+
         process.VERBOSITY_LEVEL = argv.verbose ? Number(argv.verbose) : defaultVerbosity
         process.IS_LICENSED = true
         process.ASSERT_LICENSED = () => {}
         process.BOTPRESS_VERSION = metadataContent.version
 
-        const isProBuild = fs.existsSync(path.resolve(process.PROJECT_LOCATION, 'pro')) || process.pkg
+        process.IS_PRO_AVAILABLE = fs.existsSync(path.resolve(process.PROJECT_LOCATION, 'pro')) || !!process.pkg
         const configPath = path.join(process.PROJECT_LOCATION, '/data/global/botpress.config.json')
 
-        if (isProBuild) {
+        if (process.IS_PRO_AVAILABLE) {
           process.CLUSTER_ENABLED = yn(process.env.CLUSTER_ENABLED)
 
           if (process.env.PRO_ENABLED === undefined) {
@@ -105,34 +125,54 @@ try {
     )
     .command(
       'pull',
-      'Sync pending changes from an external server running botpress to local files',
+      'Pull data from a remote server to your local file system',
       {
         url: {
-          description: 'url of the botpress server from which you want to pull changes',
+          description: 'Base URL of the botpress server from which you want to pull changes',
           default: 'http://localhost:3000',
           type: 'string'
         },
         authToken: {
           alias: 'token',
-          description: 'your authorization token on the remote botpress server',
-          // tslint:disable-next-line:no-null-keyword
-          default: null,
+          description: 'Authorization token on the remote botpress server',
           type: 'string'
         },
         targetDir: {
           alias: 'dir',
-          description: 'target directory in which you want sync the changes. will be created if doesnt exist',
-          default: path.join(__dirname, 'data'),
+          description: 'Target directory where the remote data will be stored',
           type: 'string'
         }
       },
-      argv => require('./pull').default(argv)
+      argv => require('./bpfs').default(argv, 'pull')
+    )
+    .command(
+      'push',
+      'Push local files to a remote botpress server',
+      {
+        url: {
+          description: 'URL of the botpress server to which to push changes',
+          default: 'http://localhost:3000',
+          type: 'string'
+        },
+        authToken: {
+          alias: 'token',
+          description: 'Authorization token on the remote botpress server',
+          type: 'string'
+        },
+        sourceDir: {
+          alias: 'dir',
+          description: 'The local directory containing the data you want to push on the remote server',
+          type: 'string'
+        }
+      },
+      argv => require('./bpfs').default(argv, 'push')
     )
     .command(
       'bench',
       'Run a benchmark on your bot',
       {
         url: {
+          description: 'Base URL of the botpress server you want to benchmark',
           default: 'http://localhost:3000'
         },
         botId: {
@@ -167,14 +207,74 @@ try {
         text: {
           description: 'Configure the text message that will be send by the fake users',
           default: 'Hey'
+        },
+        messageFile: {
+          alias: 'file',
+          description: 'Path to a text file with one message on each line (randomize sent messages)'
         }
       },
       argv => {
         require('./bench').default(argv)
       }
     )
+    .command(
+      'lang',
+      'Launch a local language server',
+      {
+        port: {
+          description: 'The port to listen to',
+          default: 3100
+        },
+        host: {
+          description: 'Binds the language server to a specific hostname',
+          default: 'localhost'
+        },
+        langDir: {
+          description: 'Directory where language embeddings will be saved'
+        },
+        authToken: {
+          description: 'When enabled, this token is required for clients to query your language server'
+        },
+        adminToken: {
+          description: 'This token is required to access the server as admin and manage language.'
+        },
+        limit: {
+          description: 'Maximum number of requests per IP per "limitWindow" interval (0 means unlimited)',
+          default: 0
+        },
+        limitWindow: {
+          description: 'Time window on which the limit is applied (use standard notation, ex: 25m or 1h)',
+          default: '1h'
+        },
+        metadataLocation: {
+          description: 'URL of metadata file which lists available languages',
+          default: 'http://botpress-public.nyc3.digitaloceanspaces.com/embeddings/index.json'
+        },
+        offline: {
+          description: 'Whether or not the language server has internet access',
+          default: false
+        },
+        dim: {
+          default: 100,
+          description: 'Number of language dimensions provided (25, 100 or 300 at the moment)'
+        },
+        domain: {
+          description: 'Name of the domain where those embeddings were trained on.',
+          default: 'bp'
+        }
+      },
+      argv => {
+        getos.default().then(distro => {
+          process.distro = distro
+          require('./lang-server').default(argv)
+        })
+      }
+    )
     .command('extract', 'Extract module archive files (.tgz) in their respective folders', {}, argv => {
-      require('./extractor').default(argv)
+      getos.default().then(distro => {
+        process.distro = distro
+        require('./extractor').default(argv)
+      })
     })
     .option('verbose', {
       alias: 'v',

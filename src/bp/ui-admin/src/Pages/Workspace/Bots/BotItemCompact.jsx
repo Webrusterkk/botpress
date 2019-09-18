@@ -9,42 +9,48 @@ import {
   UncontrolledTooltip
 } from 'reactstrap'
 import { AccessControl } from '../../../App/AccessControl'
-import { IoIosChatbubble } from 'react-icons/lib/io'
-import { MdModeEdit, MdArchive, MdDelete, MdLock, MdMoreVert, MdWarning, MdBackup, MdReplay } from 'react-icons/lib/md'
-import { FaCog } from 'react-icons/lib/fa'
+import { IoIosChatbubbles } from 'react-icons/io'
+import { MdModeEdit, MdArchive, MdDelete, MdLock, MdMoreVert, MdWarning, MdBackup, MdReplay } from 'react-icons/md'
+import { FaCog } from 'react-icons/fa'
 
 export default ({ bot, deleteBot, exportBot, permissions, history, createRevision, rollback }) => (
   <div className="bp_table-row" key={bot.id}>
     <div className="actions">
-      <Button size="sm" color="link" onClick={() => history.push(`/bot/${bot.id}/details`)}>
-        <FaCog /> Configs
-      </Button>
-      <Button size="sm" color="link" target="_blank" href={`${window.location.origin}/s/${bot.id}`}>
-        <IoIosChatbubble /> Open chat
-      </Button>
+      <AccessControl permissions={permissions} resource="admin.bots.*" operation="write">
+        <Button size="sm" color="link" className="configBtn" onClick={() => history.push(`/bot/${bot.id}/details`)}>
+          <FaCog /> Configs
+        </Button>
+      </AccessControl>
+      {!bot.disabled && (
+        <Button size="sm" color="link" target="_blank" href={`s/${bot.id}`}>
+          <IoIosChatbubbles /> Open chat
+        </Button>
+      )}
       <UncontrolledButtonDropdown>
-        <DropdownToggle tag="span" className="more">
+        <DropdownToggle id="toggle-menu" tag="span" className="more">
           <MdMoreVert />
         </DropdownToggle>
         <DropdownMenu>
-          <DropdownItem disabled={bot.locked} tag="a" href={`/studio/${bot.id}`}>
-            <MdModeEdit />
-            &nbsp;Edit in studio
-          </DropdownItem>
-          <DropdownItem onClick={createRevision}>
-            <MdBackup />
-            &nbsp;Create revision
-          </DropdownItem>
-          <DropdownItem onClick={rollback}>
-            <MdReplay />
-            &nbsp;Rollback
-          </DropdownItem>
+          {!bot.disabled && (
+            <DropdownItem disabled={bot.locked} tag="a" href={`studio/${bot.id}`}>
+              <MdModeEdit />
+              &nbsp;Edit in studio
+            </DropdownItem>
+          )}
           <AccessControl permissions={permissions} resource="admin.bots.*" operation="write">
-            <DropdownItem onClick={exportBot}>
+            <DropdownItem id="btn-createRevision" onClick={createRevision}>
+              <MdBackup />
+              &nbsp;Create revision
+            </DropdownItem>
+            <DropdownItem id="btn-rollbackRevision" onClick={rollback}>
+              <MdReplay />
+              &nbsp;Rollback
+            </DropdownItem>
+            <DropdownItem id="btn-export" onClick={exportBot}>
               <MdArchive />
               &nbsp;Export
             </DropdownItem>
-            <DropdownItem onClick={deleteBot}>
+            <DropdownItem id="btn-delete" onClick={deleteBot}>
               <MdDelete />
               &nbsp;Delete
             </DropdownItem>
@@ -60,7 +66,7 @@ export default ({ bot, deleteBot, exportBot, permissions, history, createRevisio
           &nbsp;
         </span>
       )}
-      {bot.disabled ? <span>{bot.name || bot.id}</span> : <a href={`/studio/${bot.id}`}>{bot.name || bot.id}</a>}
+      {bot.disabled ? <span>{bot.name || bot.id}</span> : <a href={`studio/${bot.id}`}>{bot.name || bot.id}</a>}
 
       {!bot.defaultLanguage && (
         <React.Fragment>

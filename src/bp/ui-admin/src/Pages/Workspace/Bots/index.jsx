@@ -1,9 +1,7 @@
 import React, { Component, Fragment } from 'react'
 
-import { IoIosBoxOutline } from 'react-icons/lib/io'
-import { FaPlusCircle } from 'react-icons/lib/fa'
 import { connect } from 'react-redux'
-import { Jumbotron, Row, Col, Button, Alert } from 'reactstrap'
+import { Row, Col, Alert } from 'reactstrap'
 
 import _ from 'lodash'
 
@@ -17,10 +15,24 @@ import LoadingSection from '../../Components/LoadingSection'
 import api from '../../../api'
 import { AccessControl } from '../../../App/AccessControl'
 import CreateBotModal from './CreateBotModal'
+import ImportBotModal from './ImportBotModal'
 import BotItemPipeline from './BotItemPipeline'
 import BotItemCompact from './BotItemCompact'
 import RollbackBotModal from './RollbackBotModal'
 import { toast } from 'react-toastify'
+
+import {
+  Popover,
+  Button,
+  PopoverInteractionKind,
+  Position,
+  ButtonGroup,
+  Alignment,
+  Intent,
+  Callout
+} from '@blueprintjs/core'
+
+import { Downloader } from '~/Pages/Components/Downloader'
 
 class Bots extends Component {
   state = {
@@ -46,20 +58,15 @@ class Bots extends Component {
     this.setState({ isCreateBotModalOpen: !this.state.isCreateBotModalOpen })
   }
 
-  async exportBot(botId) {
-    const { data } = await api.getSecured({ timeout: 10000 })({
-      method: 'get',
-      url: `/admin/bots/${botId}/export`,
-      responseType: 'blob'
-    })
+  toggleImportBotModal = () => {
+    this.setState({ isImportBotModalOpen: !this.state.isImportBotModalOpen })
+  }
 
-    this.setState(
-      {
-        downloadLinkHref: window.URL.createObjectURL(new Blob([data])),
-        downloadLinkFileName: `bot_${botId}_${Date.now()}.tgz`
-      },
-      () => this.downloadLink.current.click()
-    )
+  async exportBot(botId) {
+    this.setState({
+      archiveUrl: `/admin/bots/${botId}/export`,
+      archiveName: `bot_${botId}_${Date.now()}.tgz`
+    })
   }
 
   async deleteBot(botId) {
@@ -71,35 +78,37 @@ class Bots extends Component {
 
   renderEmptyBots() {
     return (
-      <div className="bots">
-        <Jumbotron>
-          <Row>
-            <Col style={{ textAlign: 'center' }} sm="12" md={{ size: 8, offset: 2 }}>
-              <h1>
-                <IoIosBoxOutline />
-                &nbsp; This workspace has no bot, yet.
-              </h1>
-              <p>In Botpress, bots are always assigned to a workspace.</p>
-              <p>{this.renderCreateNewBotButton(true)}</p>
-            </Col>
-          </Row>
-        </Jumbotron>
-      </div>
+      <Callout title="This workspace has no bot, yet" style={{ textAlign: 'center' }}>
+        <p>
+          <br />
+          In Botpress, bots are always assigned to a workspace.
+          <br />
+          Create your first bot to start building.
+        </p>
+      </Callout>
     )
   }
 
   renderCreateNewBotButton() {
     return (
       <AccessControl permissions={this.props.permissions} resource="admin.bots.*" operation="write">
-        <Button
-          onClick={() => this.setState({ isCreateBotModalOpen: true })}
-          outline
-          color="primary"
-          className="createbot_btn"
-        >
-          <FaPlusCircle />
-          &nbsp;Create Bot
-        </Button>
+        <Popover minimal interactionKind={PopoverInteractionKind.HOVER} position={Position.BOTTOM}>
+          <Button id="btn-create-bot" intent={Intent.NONE} text="Create Bot" rightIcon="caret-down" />
+          <ButtonGroup vertical={true} minimal={true} fill={true} alignText={Alignment.LEFT}>
+            <Button
+              id="btn-new-bot"
+              text="New Bot"
+              icon="add"
+              onClick={() => this.setState({ isCreateBotModalOpen: true })}
+            />
+            <Button
+              id="btn-import-bot"
+              text="Import Existing"
+              icon="import"
+              onClick={() => this.setState({ isImportBotModalOpen: true })}
+            />
+          </ButtonGroup>
+        </Popover>
       </AccessControl>
     )
   }
@@ -135,6 +144,9 @@ class Bots extends Component {
   }
 
   renderCompactView() {
+    if (!this.props.bots.length) {
+      return this.renderEmptyBots()
+    }
     return (
       <div className="bp_table bot_views compact_view">
         {this.props.bots.map(bot => (
@@ -215,14 +227,13 @@ class Bots extends Component {
 
     return (
       <Fragment>
-        <a ref={this.downloadLink} href={this.state.downloadLinkHref} download={this.state.downloadLinkFileName}>
-          {' '}
-        </a>
+        <Downloader url={this.state.archiveUrl} filename={this.state.archiveName} />
+
         <SectionLayout
           title={`Your bots`}
           helpText="This page lists all the bots created under the default workspace."
           activePage="bots"
-          mainContent={this.props.bots.length > 0 ? this.renderBots() : this.renderEmptyBots()}
+          mainContent={this.renderBots()}
           sideMenu={!this.isPipelineView && this.renderCreateNewBotButton()}
         />
         <RollbackBotModal
@@ -234,6 +245,11 @@ class Bots extends Component {
         <CreateBotModal
           isOpen={this.state.isCreateBotModalOpen}
           toggle={this.toggleCreateBotModal}
+          onCreateBotSuccess={this.props.fetchBots}
+        />
+        <ImportBotModal
+          isOpen={this.state.isImportBotModalOpen}
+          toggle={this.toggleImportBotModal}
           onCreateBotSuccess={this.props.fetchBots}
         />
       </Fragment>

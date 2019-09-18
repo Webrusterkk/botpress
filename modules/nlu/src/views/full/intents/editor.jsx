@@ -7,9 +7,9 @@ import Editor from './draft/editor'
 
 import style from './style.scss'
 import Slots from './slots/Slots'
-import { Creatable } from 'react-select'
-import classnames from 'classnames'
-import { BotpressTooltip } from 'botpress/tooltip'
+import Creatable from 'react-select/lib/Creatable'
+import { Tooltip, Icon, Position, Colors } from '@blueprintjs/core'
+import IntentHint from './IntentHint'
 
 const NLU_TABIDX = 3745
 
@@ -19,37 +19,36 @@ export default class IntentsEditor extends React.Component {
     slotsEditor: null,
     slots: [],
     utterances: [],
-    selectedContextOptions: []
+    selectedContextOptions: [],
+    mlRecommendations: {
+      minUtterancesForML: undefined,
+      goodUtterancesForML: undefined
+    }
   }
 
   editorRef = null
 
-  componentDidMount() {
+  async componentDidMount() {
     this.initiateStateFromProps(this.props)
 
-    if (this.props.router) {
-      this.props.router.registerTransitionHook(this.onBeforeLeave)
-    }
-  }
-
-  componentWillUnmount() {
-    if (this.props.router) {
-      this.props.router.unregisterTransitionHook(this.onBeforeLeave)
-    }
+    const { data } = await this.props.axios.get('/mod/nlu/ml-recommendations')
+    this.setState({ ...this.state, mlRecommendations: data })
   }
 
   componentWillReceiveProps(nextProps) {
-    if (nextProps.intent !== this.props.intent) {
+    if (nextProps.intent !== this.props.intent || nextProps.contentLang !== this.props.contentLang) {
       this.initiateStateFromProps(nextProps)
     }
   }
 
   initiateStateFromProps(props) {
-    const { utterances, slots, contexts } = (props && props.intent) || {
-      utterances: [],
+    const { slots, contexts } = (props && props.intent) || {
       slots: [],
       contexts
     }
+
+    const utterances = (props && props.intent && props.intent.utterances[props.contentLang]) || []
+
     const availableContexts = props.contexts
     const expanded = this.expandCanonicalUtterances(utterances)
 
@@ -74,20 +73,14 @@ export default class IntentsEditor extends React.Component {
     })
   }
 
-  deleteIntent = () => {
-    if (!confirm('Are you sure you want to delete this intent? This is not revertable.')) {
-      return
-    }
-
-    this.props.axios.delete(`/mod/nlu/intents/${this.props.intent.name}`).then(() => {
-      this.props.reloadIntents && this.props.reloadIntents()
-    })
-  }
-
+  // TODO use updateIntent from api
   saveIntent = async () => {
     await this.props.axios.post(`/mod/nlu/intents`, {
       name: this.props.intent.name,
-      utterances: this.getCanonicalUtterances(this.state.utterances),
+      utterances: {
+        ...this.props.intent.utterances,
+        [this.props.contentLang]: this.getCanonicalUtterances(this.state.utterances)
+      },
       slots: this.state.slots,
       contexts: this.state.contexts
     })
@@ -106,14 +99,6 @@ export default class IntentsEditor extends React.Component {
       await this.saveIntent()
       this.props.onUtterancesChange && this.props.onUtterancesChange()
     }
-  }
-
-  onBeforeLeave = () => {
-    if (this.isDirty()) {
-      return confirm('You have unsaved changed that will be lost. Are you sure you want to leave?')
-    }
-
-    return true
   }
 
   getCanonicalUtterances = utterances => (utterances || []).map(x => x.text).filter(x => x.length)
@@ -195,14 +180,6 @@ export default class IntentsEditor extends React.Component {
     )
   }
 
-  renderNone() {
-    return (
-      <div>
-        <h1>No intent selected</h1>
-      </div>
-    )
-  }
-
   handleSlotsChanged = (slots, { operation, name, oldName } = {}) => {
     const replaceObj = { slots }
 
@@ -247,10 +224,6 @@ export default class IntentsEditor extends React.Component {
   }
 
   render() {
-    if (!this.props.intent) {
-      return this.renderNone()
-    }
-
     const { name } = this.props.intent
 
     return (
@@ -263,27 +236,34 @@ export default class IntentsEditor extends React.Component {
             </h1>
           </div>
         </div>
-        <div className={classnames('pull-left', style.selectContext)}>
-          <div>
-            <label for="selectContext">Current contexts</label>
+        <div className={style.tools}>
+          <div className={style.selectContext}>
+            <label htmlFor="selectContext">Current contexts</label>
             &nbsp;
-            <BotpressTooltip message="You can type in the select bar to add new contexts. To learn more about contexts, try the Welcome Bot." />
+            <Tooltip content="You can type in the select bar to add new contexts." position={Position.RIGHT}>
+              <Icon color={Colors.GRAY2} icon="info-sign" />
+            </Tooltip>
+            <Creatable
+              id="selectContext"
+              isMulti
+              onChange={this.handleChangeContext}
+              value={this.state.selectedContextOptions}
+              options={
+                this.state.availableContexts &&
+                this.state.availableContexts.map(x => {
+                  return { value: x, label: x }
+                })
+              }
+            />
           </div>
-          <Creatable
-            id="selectContext"
-            multi
-            onChange={this.handleChangeContext}
-            value={this.state.selectedContextOptions}
-            options={
-              this.state.availableContexts &&
-              this.state.availableContexts.map(x => {
-                return { value: x, label: x }
-              })
-            }
+          <IntentHint
+            intent={this.props.intent}
+            contentLang={this.props.contentLang}
+            mlRecommendations={this.state.mlRecommendations}
           />
         </div>
         <div>
-          <SplitterLayout secondaryInitialSize={350} secondaryMinSize={200}>
+          <SplitterLayout customClassName={style.intentEditor} secondaryInitialSize={350} secondaryMinSize={200}>
             {this.renderEditor()}
             <div className={style.entitiesPanel}>
               <Slots

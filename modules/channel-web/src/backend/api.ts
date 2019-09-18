@@ -1,6 +1,6 @@
 import aws from 'aws-sdk'
 import * as sdk from 'botpress/sdk'
-import fs from 'fs'
+import crypto from 'crypto'
 import _ from 'lodash'
 import moment from 'moment'
 import multer from 'multer'
@@ -96,9 +96,9 @@ export default async (bp: typeof sdk, db: Database) => {
       }
 
       res.send({
-        showBotInfoPage: config.showBotInfoPage,
+        showBotInfoPage: (config.infoPage && config.infoPage.enabled) || config.showBotInfoPage,
         name: botInfo.name,
-        description: botInfo.description,
+        description: (config.infoPage && config.infoPage.description) || botInfo.description,
         details: botInfo.details
       })
     })
@@ -122,8 +122,7 @@ export default async (bp: typeof sdk, db: Database) => {
       conversationId = conversationId && parseInt(conversationId)
 
       if (
-        !_.includes(
-          ['text', 'quick_reply', 'form', 'login_prompt', 'visit', 'request_start_conversation', 'postback'],
+        !['text', 'quick_reply', 'form', 'login_prompt', 'visit', 'request_start_conversation', 'postback'].includes(
           payload.type
         )
       ) {
@@ -257,7 +256,7 @@ export default async (bp: typeof sdk, db: Database) => {
       credentials
     })
 
-    const message = await db.appendUserMessage(botId, userId, conversationId, sanitizedPayload)
+    const message = await db.appendUserMessage(botId, userId, conversationId, sanitizedPayload, event.id)
 
     bp.realtime.sendPayload(bp.RealTimePayload.forVisitor(userId, 'webchat.message', message))
     return bp.events.sendEvent(event)
@@ -310,27 +309,54 @@ export default async (bp: typeof sdk, db: Database) => {
 
   router.post('/conversations/:userId/new', async (req, res) => {
     const { userId, botId } = req.params
-    await db.createConversation(botId, userId)
-    res.sendStatus(200)
+    const convoId = await db.createConversation(botId, userId)
+    res.send({ convoId })
   })
 
-  router.get('/:userId/reference', async (req, res) => {
+  router.post('/conversations/:userId/:conversationId/reference/:reference', async (req, res) => {
     try {
-      const {
-        params: { userId },
-        query: { ref: webchatUrlQuery }
-      } = req
+      const { botId, userId, reference } = req.params
+      let { conversationId } = req.params
 
-      // FIXME
-      // const state = await bp.dialogEngine.stateManager.getState(userId)
-      // const newState = { ...state, webchatUrlQuery }
+      await bp.users.getOrCreateUser('web', userId)
 
-      // FIXME
-      // await bp.dialogEngine.stateManager.setState(userId, newState)
+      if (typeof reference !== 'string' || !reference.length || reference.indexOf('=') === -1) {
+        throw new Error('Invalid reference')
+      }
 
-      res.status(200)
+      if (!conversationId || conversationId == 'null') {
+        conversationId = await db.getOrCreateRecentConversation(botId, userId, { originatesFromUserMessage: true })
+      }
+
+      const message = reference.slice(0, reference.lastIndexOf('='))
+      const signature = reference.slice(reference.lastIndexOf('=') + 1)
+
+      const verifySignature = await bp.security.getMessageSignature(message)
+      if (verifySignature !== signature) {
+        throw new Error('Bad reference signature')
+      }
+
+      const payload = {
+        text: message,
+        signature: signature,
+        type: 'session_reference'
+      }
+
+      const event = bp.IO.Event({
+        botId,
+        channel: 'web',
+        direction: 'incoming',
+        target: userId,
+        threadId: conversationId,
+        type: payload.type,
+        payload,
+        credentials: req.credentials
+      })
+
+      await bp.events.sendEvent(event)
+      res.sendStatus(200)
     } catch (error) {
-      res.status(500)
+      res.status(500).send({ message: error.message })
     }
   })
 

@@ -1,8 +1,7 @@
 import React from 'react'
 import Profile from './Profile'
-import BotpressAccount from './BotpressAccount'
 import TabLayout from '../Layouts/Tabs'
-import { MdPerson, MdSubscriptions } from 'react-icons/lib/md'
+import { MdPerson } from 'react-icons/md'
 
 const MyAccount = props => {
   const title = 'My Account'
@@ -12,12 +11,6 @@ const MyAccount = props => {
       route: '/profile/me',
       icon: <MdPerson />,
       component: Profile
-    },
-    {
-      name: 'My Botpress Account',
-      route: '/profile/account',
-      icon: <MdSubscriptions />,
-      component: BotpressAccount
     }
   ]
 

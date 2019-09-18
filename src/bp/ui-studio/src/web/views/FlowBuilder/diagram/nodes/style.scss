@@ -1,8 +1,8 @@
-:global(.storm-diagrams-canvas .node) {
+:global(.srd-diagram .node) {
   opacity: 0.9;
 }
 
-:global(.storm-diagrams-canvas .node.selected) > .node-container {
+:global(.srd-diagram .node.selected) > .node-container {
   border-color: #028aee !important;
 }
 
@@ -10,6 +10,10 @@
   width: 200px;
   background: white;
   border: 1px solid black;
+}
+
+.highlightedNode {
+  outline: 5px solid #ffde33 !important;
 }
 
 .item {
@@ -93,7 +97,7 @@
     border: none;
     background: rgba(0, 0, 0, 0.2);
 
-    &:global(.selected) {
+    &:global(.srd-port--selected) {
       background: rgba(0, 0, 0, 0.5);
     }
   }

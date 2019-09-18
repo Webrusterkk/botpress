@@ -29,7 +29,7 @@ declare module 'botpress/sdk' {
     scope: string
     message: string
     metadata: any
-    timestamp: string
+    timestamp: Date
   }
 
   export enum LoggerLevel {
@@ -43,6 +43,10 @@ declare module 'botpress/sdk' {
     PRODUCTION = 0,
     DEV = 1,
     DEBUG = 2
+  }
+
+  export interface LoggerListener {
+    (level: LogLevel, message: string, args: any): void
   }
 
   export interface Logger {
@@ -89,7 +93,7 @@ declare module 'botpress/sdk' {
     /**
      * Called when the module is unloaded, before being reloaded
      * onBotUnmount is called for each bots before this one is called
-     * */
+     */
     onModuleUnmount?: (bp: typeof import('botpress/sdk')) => void
     onFlowChanged?: (bp: typeof import('botpress/sdk'), botId: string, flow: Flow) => void
     /**
@@ -136,6 +140,8 @@ declare module 'botpress/sdk' {
     menuText?: string
     /** Optionnaly specify a link to your page or github repo */
     homepage?: string
+    /** Whether or not the module is likely to change */
+    experimental?: boolean
   }
 
   /**
@@ -228,20 +234,61 @@ declare module 'botpress/sdk' {
 
       export interface ModelConstructor {
         new (): Model
+        new (lazy: boolean, keepInMemory: boolean, queryOnly: boolean): Model
       }
 
       export const Model: ModelConstructor
     }
 
+    export namespace SVM {
+      export interface SVMOptions {
+        classifier: 'C_SVC'
+        kernel: 'LINEAR' | 'RBF' | 'POLY'
+        c: number | number[]
+        gamma: number | number[]
+      }
+
+      export type DataPoint = {
+        label: string
+        coordinates: number[]
+      }
+
+      export type Prediction = {
+        label: string
+        confidence: number
+      }
+
+      export interface TrainProgressCallback {
+        (progress: number): void
+      }
+
+      export class Trainer {
+        constructor(options?: Partial<SVMOptions>)
+        train(points: DataPoint[], callback?: TrainProgressCallback): Promise<void>
+        isTrained(): boolean
+        serialize(): string
+      }
+
+      export class Predictor {
+        constructor(model: string)
+        predict(coordinates: number[]): Promise<Prediction[]>
+        isLoaded(): boolean
+        getLabels(): string[]
+      }
+    }
+
     export namespace Strings {
       /**
-       * Returns the levenshtein distance between two strings
+       * Returns the levenshtein similarity between two strings
+       * sim(a, b) = (|a| - dist(a, b)) / |a| where |a| < |b|
+       * sim(a, b) ∈ [0, 1]
        * @returns the proximity between 0 and 1, where 1 is very close
        */
       export const computeLevenshteinDistance: (a: string, b: string) => number
 
       /**
-       * Returns the jaro-winkler distance between two strings
+       * Returns the jaro-winkler similarity between two strings
+       * sim(a, b) = 1 - dist(a, b)
        * @returns the proximity between 0 and 1, where 1 is very close
        */
       export const computeJaroWinklerDistance: (a: string, b: string, options: { caseSensitive: boolean }) => number
@@ -251,6 +298,7 @@ declare module 'botpress/sdk' {
       export interface Tagger {
         tag(xseq: Array<string[]>): { probability: number; result: string[] }
         open(model_filename: string): boolean
+        marginal(xseq: Array<string[]>): { [label: string]: number }[]
       }
 
       export interface TrainerOptions {
@@ -270,6 +318,16 @@ declare module 'botpress/sdk' {
 
       export const createTrainer: () => Trainer
       export const createTagger: () => Tagger
+    }
+
+    export namespace SentencePiece {
+      export interface Processor {
+        loadModel: (modelPath: string) => void
+        encode: (inputText: string) => string[]
+        decode: (pieces: string[]) => string
+      }
+
+      export const createProcessor: () => Processor
     }
   }
 
@@ -293,12 +351,15 @@ declare module 'botpress/sdk' {
 
     export interface SlotDefinition {
       name: string
-      entity: string
+      entities: string[]
+      entity?: string
     }
 
     export interface IntentDefinition {
       name: string
-      utterances: string[]
+      utterances: {
+        [lang: string]: string[]
+      }
       filename: string
       slots: SlotDefinition[]
       contexts: string[]
@@ -336,11 +397,17 @@ declare module 'botpress/sdk' {
     export interface Slot {
       name: string
       value: any
+      source: any
       entity: Entity
+      confidence: number
+    }
+
+    export interface SlotCollection {
+      [key: string]: Slot
     }
 
     export interface SlotsCollection {
-      [key: string]: Slot | Slot[]
+      [key: string]: Slot[]
     }
   }
   export namespace IO {
@@ -372,6 +439,7 @@ declare module 'botpress/sdk' {
       suggestions?: Suggestion[]
       credentials?: any
       nlu?: Partial<EventUnderstanding>
+      incomingEventId?: string
     }
 
     /**
@@ -425,10 +493,15 @@ declare module 'botpress/sdk' {
 
     export interface EventUnderstanding {
       readonly intent: NLU.Intent
+      /** Predicted intents needs disambiguiation */
+      readonly ambiguous: boolean
       readonly intents: NLU.Intent[]
+      /** The language used for prediction. Will be equal to detected langauge when its part of supported languages, falls back to default language otherwise */
       readonly language: string
+      /** Language detected from users input. */
+      readonly detectedLanguage: string
       readonly entities: NLU.Entity[]
-      readonly slots: NLU.SlotsCollection
+      readonly slots: NLU.SlotCollection
       readonly errored: boolean
       readonly includedContexts: string[]
     }
@@ -444,6 +517,11 @@ declare module 'botpress/sdk' {
       readonly decision?: Suggestion
       /* HITL module has possibility to pause conversation */
       readonly isPause?: boolean
+    }
+
+    export interface OutgoingEvent extends Event {
+      /* Id of event which is being replied to; only defined for outgoing events */
+      readonly incomingEventId?: string
     }
 
     export interface Suggestion {
@@ -468,7 +546,7 @@ declare module 'botpress/sdk' {
      */
     export interface EventState {
       /** Data saved as user attributes; retention policies in Botpress global config applies  */
-      user: User
+      user: object
       /** Data is kept for the active session. Timeout configurable in the global config file */
       session: CurrentSession
       /** Data saved to this variable will be remembered until the end of the flow */
@@ -481,6 +559,20 @@ declare module 'botpress/sdk' {
       bot: any
       /** Used internally by Botpress to keep the user's current location and upcoming instructions */
       context: DialogContext
+      /**
+       * EXPERIMENTAL
+       * This includes all the flow/nodes which were traversed for the current event
+       */
+      __stacktrace: JumpPoint[]
+      /** Contains details about an error that occurred while processing the event */
+      __error?: EventError
+    }
+
+    export interface EventError {
+      type: string
+      stacktrace?: string
+      actionName?: string
+      actionArgs?: any
     }
 
     export interface JumpPoint {
@@ -512,9 +604,36 @@ declare module 'botpress/sdk' {
 
     export interface CurrentSession {
       lastMessages: DialogTurnHistory[]
+      nluContexts?: NluContext[]
+    }
+
+    export type StoredEvent = {
+      /** This ID is automatically generated when inserted in the DB  */
+      readonly id?: number
+      direction: EventDirection
+      /** Outgoing events will have the incoming event ID, if they were triggered by one */
+      incomingEventId?: string
+      sessionId: string
+      event: IO.Event
+      createdOn: any
+    } & EventDestination
+
+    /**
+     * They represent the contexts that will be used by the NLU Engine for the next messages for that chat session.
+     *
+     * The TTL (Time-To-Live) represents how long the contexts will be valid before they are automatically removed.
+     * For example, the default value of `1` will listen for that context only once (the next time the user speaks).
+     *
+     * If a context was already present in the list, the higher TTL will win.
+     */
+    export interface NluContext {
+      context: string
+      /** Represent the number of turns before the context is removed from the session */
+      ttl: number
     }
 
     export interface DialogTurnHistory {
+      eventId: string
       incomingPreview: string
       replySource: string
       replyPreview: string
@@ -594,11 +713,21 @@ declare module 'botpress/sdk' {
      * Insert or Update the file at the specified location
      * @param rootFolder - Folder relative to the scoped parent
      * @param file - The name of the file
+     * @param content - The content of the file
+     * @param recordRevision - Whether or not to record a revision @default true
+     * @param syncDbToDisk - When enabled, files changed on the database are synced locally so they can be used locally (eg: require in actions) @default false
      */
-    upsertFile(rootFolder: string, file: string, content: string | Buffer): Promise<void>
+    upsertFile(
+      rootFolder: string,
+      file: string,
+      content: string | Buffer,
+      recordRevision?: boolean,
+      syncDbToDisk?: boolean
+    ): Promise<void>
     readFileAsBuffer(rootFolder: string, file: string): Promise<Buffer>
     readFileAsString(rootFolder: string, file: string): Promise<string>
     readFileAsObject<T>(rootFolder: string, file: string): Promise<T>
+    renameFile(rootFolder: string, fromName: string, toName: string): Promise<void>
     deleteFile(rootFolder: string, file: string): Promise<void>
     /**
      * List all the files matching the ending pattern in the folder
@@ -606,14 +735,41 @@ declare module 'botpress/sdk' {
      * @param rootFolder - Folder relative to the scoped parent
      * @param fileEndingPattern - The pattern to match. Don't forget to include wildcards!
      * @param exclude - The pattern to match excluded files.
+     * @param includeDotFiles - Whether or not to include files starting with a dot (normally disabled files)
      */
-    directoryListing(rootFolder: string, fileEndingPattern: string, exclude?: string | string[]): Promise<string[]>
+    directoryListing(
+      rootFolder: string,
+      fileEndingPattern: string,
+      exclude?: string | string[],
+      includeDotFiles?: boolean
+    ): Promise<string[]>
     /**
      * Starts listening on all file changes (deletion, inserts and updates)
      * `callback` will be called for every change
      * To stop listening, call the `remove()` method of the returned ListenHandle
      */
     onFileChanged(callback: (filePath: string) => void): ListenHandle
+    fileExists(rootFolder: string, file: string): Promise<boolean>
+  }
+
+  export interface KvsService {
+    /**
+     * Returns the specified key as JSON object
+     * @example bp.kvs.get('bot123', 'hello/whatsup')
+     */
+    get(key: string, path?: string): Promise<any>
+
+    /**
+     * Saves the specified key as JSON object
+     * @example bp.kvs.set('bot123', 'hello/whatsup', { msg: 'i love you' })
+     */
+    set(key: string, value: any, path?: string): Promise<void>
+    setStorageWithExpiry(key: string, value, expiryInMs?: string)
+    getStorageWithExpiry(key: string)
+    getConversationStorageKey(sessionId: string, variable: string): string
+    getUserStorageKey(userId: string, variable: string): string
+    getGlobalStorageKey(variable: string): string
+    removeStorageKeysStartingWith(key): Promise<void>
   }
 
   export interface ListenHandle {
@@ -639,6 +795,7 @@ declare module 'botpress/sdk' {
       /** Defines the list of content types supported by the bot */
       contentTypes: string[]
     }
+    converse?: ConverseConfig
     dialog?: DialogConfig
     logs?: LogsConfig
     defaultLanguage: string
@@ -685,9 +842,25 @@ declare module 'botpress/sdk' {
     expiration: string
   }
 
+  /**
+   * Configuration definition of Dialog Sessions
+   */
   export interface DialogConfig {
+    /** The interval until a session context expires */
     timeoutInterval: string
+    /** The interval until a session expires */
     sessionTimeoutInterval: string
+  }
+
+  /**
+   * Configuration file definition for the Converse API
+   */
+  export type ConverseConfig = {
+    /**
+     * The timeout of the converse API requests
+     * @default 5s
+     */
+    timeout: string
   }
 
   /**
@@ -795,6 +968,8 @@ declare module 'botpress/sdk' {
     type?: any
     timeoutNode?: string
     flow?: string
+    /** Used internally by the flow editor */
+    readonly lastModified?: Date
   } & (NodeActions)
 
   export type SkillFlowNode = Partial<FlowNode> & Pick<Required<FlowNode>, 'name'>
@@ -861,6 +1036,34 @@ declare module 'botpress/sdk' {
     }
   }
 
+  export interface MigrationResult {
+    success: boolean
+    message?: string
+  }
+
+  export interface ModuleMigration {
+    info: {
+      description: string
+      target?: 'core' | 'bot'
+      type: 'database' | 'config' | 'content'
+    }
+    up: (opts: ModuleMigrationOpts) => Promise<MigrationResult>
+    down?: (opts: ModuleMigrationOpts) => Promise<MigrationResult>
+  }
+
+  export interface ModuleMigrationOpts {
+    bp: typeof import('botpress/sdk')
+    metadata: MigrationMetadata
+    configProvider: any
+    database: any
+    inversify: any
+  }
+
+  /** These are additional informations that Botpress may pass down to migrations (for ex: running bot-specific migration) */
+  export interface MigrationMetadata {
+    botId?: string
+  }
+
   /**
    * Simple interface to use when paging is required
    */
@@ -903,6 +1106,12 @@ declare module 'botpress/sdk' {
      * @default true
      */
     enableJsonBodyParser?: RouterCondition
+
+    /**
+     * Only parses body which are urlencoded
+     * @default true
+     */
+    enableUrlEncoderBodyParser?: RouterCondition
   }
 
   /**
@@ -920,6 +1129,14 @@ declare module 'botpress/sdk' {
     sortOrder?: SortOrder[]
     /** Apply a filter to a specific field (instead of the 'search all' field) */
     filters?: Filter[]
+  }
+
+  export type EventSearchParams = {
+    /** Returns the amount of elements from the starting position  */
+    from: number
+    count: number
+    /** An array of columns with direction to sort results */
+    sortOrder?: SortOrder[]
   }
 
   export interface Filter {
@@ -999,6 +1216,13 @@ declare module 'botpress/sdk' {
      */
     export function extractExternalToken(req: any, res: any, next: any): Promise<void>
 
+    export function needPermission(
+      operation: string,
+      resource: string
+    ): (req: any, res: any, next: any) => Promise<void>
+
+    export function hasPermission(req: any, operation: string, resource: string): Promise<boolean>
+
     export interface RouterExtension {
       getPublicPath(): Promise<string>
     }
@@ -1033,7 +1257,26 @@ declare module 'botpress/sdk' {
      * @param eventDestination - The destination to identify the target
      * @param payloads - One or multiple payloads to send
      */
-    export function replyToEvent(eventDestination: IO.EventDestination, payloads: any[]): void
+    export function replyToEvent(eventDestination: IO.EventDestination, payloads: any[], incomingEventId?: string): void
+
+    /**
+     * Return the state of the icoming queue. True if there are any events(messages)
+     * from the user waiting in the queue.
+     * @param event - Current event in the action context, used to identify the queue
+     */
+    export function isIncomingQueueEmpty(event: IO.Event): boolean
+
+    /**
+     * When Event Storage is enabled, you can use this API to query data about stored events. You can use multiple fields
+     * for your query, but at least one is required.
+     *
+     * @param fields - One or multiple fields to add to the search query
+     * @param searchParams - Additional parameters for the query, like ordering, number of rows, etc.
+     */
+    export function findEvents(
+      fields: Partial<IO.StoredEvent>,
+      searchParams?: EventSearchParams
+    ): Promise<IO.StoredEvent[]>
   }
 
   export type GetOrCreateResult<T> = Promise<{
@@ -1058,6 +1301,7 @@ declare module 'botpress/sdk' {
     export function setAttributes(channel: string, userId: string, attributes: any): Promise<void>
     export function getAllUsers(paging?: Paging): Promise<any>
     export function getUserCount(): Promise<any>
+    export function getAttributes(channel: string, userId: string): Promise<any>
   }
 
   /**
@@ -1118,21 +1362,56 @@ declare module 'botpress/sdk' {
    */
   export namespace kvs {
     /**
+     * Access the KVS Service for a specific bot. Check the {@link ScopedGhostService} for the operations available on the scoped element.
+     */
+    export function forBot(botId: string): KvsService
+    /**
+     * Access the KVS Service globally. Check the {@link ScopedGhostService} for the operations available on the scoped element.
+     */
+    export function global(): KvsService
+
+    /**
      * Returns the specified key as JSON object
      * @example bp.kvs.get('bot123', 'hello/whatsup')
+     * @deprecated will be removed, use global or forBot
      */
     export function get(botId: string, key: string, path?: string): Promise<any>
 
     /**
      * Saves the specified key as JSON object
      * @example bp.kvs.set('bot123', 'hello/whatsup', { msg: 'i love you' })
+     * @deprecated will be removed, use global or forBot
      */
     export function set(botId: string, key: string, value: any, path?: string): Promise<void>
+
+    /**
+     * @deprecated will be removed, use global or forBot
+     */
     export function setStorageWithExpiry(botId: string, key: string, value, expiryInMs?: string)
+
+    /**
+     * @deprecated will be removed, use global or forBot
+     */
     export function getStorageWithExpiry(botId: string, key: string)
+
+    /**
+     * @deprecated will be removed, use global or forBot
+     */
     export function getConversationStorageKey(sessionId: string, variable: string): string
+
+    /**
+     * @deprecated will be removed, use global or forBot
+     */
     export function getUserStorageKey(userId: string, variable: string): string
+
+    /**
+     * @deprecated will be removed, use global or forBot
+     */
     export function getGlobalStorageKey(variable: string): string
+
+    /**
+     * @deprecated will be removed, use global or forBot
+     */
     export function removeStorageKeysStartingWith(key): Promise<void>
   }
 
@@ -1162,7 +1441,10 @@ declare module 'botpress/sdk' {
      * Access the Ghost Service for a specific bot. Check the {@link ScopedGhostService} for the operations available on the scoped element.
      */
     export function forBot(botId: string): ScopedGhostService
-
+    /**
+     * Access the Ghost Service scoped at the root of all bots
+     */
+    export function forBots(): ScopedGhostService
     /**
      * Access the Ghost Service globally. Check the {@link ScopedGhostService} for the operations available on the scoped element.
      */
@@ -1239,5 +1521,41 @@ declare module 'botpress/sdk' {
     export function saveFile(botId: string, fileName: string, content: Buffer): Promise<string>
     export function readFile(botId, fileName): Promise<Buffer>
     export function getFilePath(botId: string, fileName: string): string
+
+    /**
+     * Mustache template to render. Can contain objects, arrays, strings.
+     * @example '{{en}}', ['{{nested.de}}'], {notSoNested: '{{fr}}'}
+     */
+    export type TemplateItem = Object | Object[] | string[] | string
+
+    /**
+     * Render a template using Mustache template rendering.
+     * Use recursive template rendering to extract nexted templates.
+     *
+     * @param item TemplateItem to render
+     * @param context Variables to use for the template rendering
+     */
+    export function renderTemplate(item: TemplateItem, context): TemplateItem
+  }
+
+  /**
+   * Utility security-related features offered to developers
+   * to create more secure extensions.
+   */
+  export namespace security {
+    /**
+     * Creates a message signature, which can be used as proof that the message was created on Botpress backend
+     * You can call this method twice to verify the authenticity of a message
+     */
+    export function getMessageSignature(message: string): Promise<string>
+  }
+
+  /**
+   * These features are subject to change and should not be relied upon.
+   * They will eventually be either removed or moved in another namespace
+   */
+  export namespace experimental {
+    export function disableHook(hookName: string, hookType: string, moduleName?: string): Promise<boolean>
+    export function enableHook(hookName: string, hookType: string, moduleName?: string): Promise<boolean>
   }
 }

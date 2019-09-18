@@ -1,43 +1,77 @@
 import * as sdk from 'botpress/sdk'
+import _ from 'lodash'
 
-import { BIO } from '../../typings'
+import { createMockLogger } from '../../../../../../src/bp/core/misc/utils'
+import { makeTokens } from '../../tools/token-utils'
+import { BIO, LanguageProvider, NLUHealth } from '../../typings'
 
 import { generatePredictionSequence, generateTrainingSequence } from './pre-processor'
 
 const AN_ENTITY = 'person'
+const OTHER_ENTITY = 'animal'
+
+const languageProvider: LanguageProvider = {
+  vectorize: function(tokens: string[], lang: string): Promise<Float32Array[]> {
+    const vectors = [Float32Array.from([1, 2, 3])]
+    return Promise.resolve(vectors)
+  },
+
+  tokenize: function(utterances: string[], lang: string): Promise<string[][]> {
+    // This is a white space tokenizer only working for tests written in english
+    const res = utterances.map(text => text.split(' ').filter(_.identity))
+
+    return Promise.resolve(res)
+  },
+
+  generateSimilarJunkWords: (tokens: string[], lang: string) => Promise.resolve([]), // Not implemented
+
+  getHealth: (): Partial<NLUHealth> => {
+    return {}
+  }
+}
 
 describe('Preprocessing', () => {
-  test('generate training seq', () => {
+  const logger = createMockLogger()
+
+  test('generate training seq', async () => {
     const slotDef = [
       {
         name: 'ME',
-        entity: AN_ENTITY
+        entities: [AN_ENTITY]
       },
       {
         name: 'YOU',
-        entity: AN_ENTITY
+        entities: [AN_ENTITY, OTHER_ENTITY]
       }
     ]
+    const scopedGenerateTrainingSequence = generateTrainingSequence(languageProvider, logger)
 
-    const trainingSeq = generateTrainingSequence(`hello my name is [Jacob Jacobson](${slotDef[0].name}) and your name is [Paul](${slotDef[1].name})`, slotDef)
+    const trainingSeq = await scopedGenerateTrainingSequence(
+      `hello my name is [Jacob Jacobson](${slotDef[0].name}) and your name is [Paul](${slotDef[1].name})`,
+      'en',
+      slotDef
+    )
 
-    expect(trainingSeq.cannonical).toEqual('hello my name is Jacob Jacobson and your name is Paul')
+    expect(trainingSeq.cannonical).toEqual('hello my name is jacob jacobson and your name is paul')
+
     expect(trainingSeq.tokens.filter(t => t.tag != BIO.OUT).length).toEqual(3)
-    expect(trainingSeq.tokens[0].slot).toBeUndefined()
+    expect(trainingSeq.tokens[0].slot).toEqual('')
     expect(trainingSeq.tokens[0].matchedEntities).toEqual([])
     expect(trainingSeq.tokens[0].tag).toEqual(BIO.OUT)
     expect(trainingSeq.tokens[0].value).toEqual('hello')
     expect(trainingSeq.tokens[4].slot).toEqual(slotDef[0].name)
-    expect(trainingSeq.tokens[4].matchedEntities).toEqual([slotDef[0].entity])
+    expect(trainingSeq.tokens[4].matchedEntities).toEqual(slotDef[0].entities)
     expect(trainingSeq.tokens[4].tag).toEqual(BIO.BEGINNING)
-    expect(trainingSeq.tokens[4].value).toEqual('Jacob')
+    expect(trainingSeq.tokens[4].value).toEqual('jacob')
+    expect(trainingSeq.tokens[4].cannonical).toEqual('Jacob')
     expect(trainingSeq.tokens[5].slot).toEqual(slotDef[0].name)
-    expect(trainingSeq.tokens[5].matchedEntities).toEqual([slotDef[0].entity])
+    expect(trainingSeq.tokens[5].matchedEntities).toEqual(slotDef[0].entities)
     expect(trainingSeq.tokens[5].tag).toEqual(BIO.INSIDE)
-    expect(trainingSeq.tokens[5].value).toEqual('Jacobson')
+    expect(trainingSeq.tokens[5].value).toEqual('jacobson')
+    expect(trainingSeq.tokens[10].matchedEntities).toEqual(slotDef[1].entities)
   })
 
-  test('generate prediction seq', () => {
+  test('generate prediction seq', async () => {
     const entities = [
       {
         name: 'numeral',
@@ -87,17 +121,33 @@ describe('Preprocessing', () => {
       }
     ] as sdk.NLU.Entity[]
 
-    // some extra spaces on purpose here
-    const testingSeq = generatePredictionSequence('Hey can you   please send 70 dollars to  Jekyll at misterhyde@evil.com', 'a name', entities)
+    const intentDef = {
+      name: 'a_name',
+      slots: [
+        {
+          name: '1',
+          entities: ['numeral']
+        },
+        {
+          name: '2',
+          entities: ['numeral', 'email']
+        }
+      ]
+    } as sdk.NLU.IntentDefinition
 
+    // weird spacing here is on purpose
+    const input = 'Hey can you   please send 70 dollars to  Jekyll at misterhyde@evil.com'
+    const tokens = await makeTokens((await languageProvider.tokenize([input], 'en'))[0], input)
+
+    const testingSeq = await generatePredictionSequence(input, intentDef, entities, tokens)
     const entityTokens = testingSeq.tokens.filter(t => t.matchedEntities.length)
-    expect(entityTokens.length).toEqual(3)
+
+    expect(entityTokens.length).toEqual(2)
     expect(entityTokens[0].value).toEqual('70')
-    expect(entityTokens[0].matchedEntities).toEqual(['numeral', 'amountOfMoney'])
-    expect(entityTokens[1].value).toEqual('dollars')
-    expect(entityTokens[1].matchedEntities).toEqual(['amountOfMoney'])
-    expect(entityTokens[2].value).toEqual('misterhyde@evil.com')
-    expect(entityTokens[2].matchedEntities).toEqual(['email'])
+    // we want amountOfMoney to be filtered out because it's not any of the allowed entities in the intent
+    expect(entityTokens[0].matchedEntities).toEqual(['numeral'])
+    expect(entityTokens[1].value).toEqual('misterhyde@evil.com')
+    expect(entityTokens[1].matchedEntities).toEqual(['email'])
     expect(testingSeq.tokens[0].value).toEqual('Hey')
     expect(testingSeq.tokens[0].matchedEntities).toEqual([])
   })

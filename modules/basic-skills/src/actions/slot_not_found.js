@@ -7,17 +7,12 @@ const hardLimit = 10
  * @param retryAttempts The maximum number of times a slot extraction gets retried
  */
 const slotNotFound = async retryAttempts => {
-  if (retryAttempts > hardLimit) {
-    temp.notExtracted = 'true'
-    return
+  if (!session.slots.notFound) {
+    session.slots.notFound = 1
   }
 
-  if (!session.extractedSlots.notFound) {
-    session.extractedSlots.notFound = 1
-  }
-
-  if (session.extractedSlots.notFound < Number(retryAttempts)) {
-    session.extractedSlots.notFound++
+  if (session.slots.notFound < Math.min(Number(retryAttempts), hardLimit)) {
+    session.slots.notFound++
   } else {
     temp.notExtracted = 'true'
   }

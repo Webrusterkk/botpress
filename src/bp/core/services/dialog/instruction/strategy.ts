@@ -10,6 +10,7 @@ import { renderTemplate } from '../../../misc/templating'
 import { TYPES } from '../../../types'
 import ActionService from '../../action/action-service'
 import { VmRunner } from '../../action/vm'
+import { BPError } from '../errors'
 
 import { Instruction, InstructionType, ProcessingResult } from '.'
 
@@ -74,6 +75,7 @@ export class ActionStrategy implements InstructionStrategy {
     debug.forBot(botId, `[${event.target}] render element "${outputType}"`)
 
     const message: IO.DialogTurnHistory = {
+      eventId: event.id,
       incomingPreview: event.preview,
       replyConfidence: 1.0,
       replySource: 'dialogManager',
@@ -98,12 +100,12 @@ export class ActionStrategy implements InstructionStrategy {
 
     const eventDestination = _.pick(event, ['channel', 'target', 'botId', 'threadId'])
     const renderedElements = await this.cms.renderElement(outputType, args, eventDestination)
-    await this.eventEngine.replyToEvent(eventDestination, renderedElements)
+    await this.eventEngine.replyToEvent(eventDestination, renderedElements, event.id)
 
     return ProcessingResult.none()
   }
 
-  private async invokeAction(botId, instruction, event): Promise<ProcessingResult> {
+  private async invokeAction(botId, instruction, event: IO.IncomingEvent): Promise<ProcessingResult> {
     const chunks: string[] = instruction.fn.split(' ')
     const argsStr = _.tail(chunks).join(' ')
     const actionName = _.first(chunks)!
@@ -133,7 +135,22 @@ export class ActionStrategy implements InstructionStrategy {
       throw new Error(`Action "${actionName}" not found, `)
     }
 
-    await this.actionService.forBot(botId).runAction(actionName, event, args)
+    try {
+      await this.actionService.forBot(botId).runAction(actionName, event, args)
+    } catch (err) {
+      event.state.__error = {
+        type: 'action-execution',
+        stacktrace: err.stacktrace,
+        actionName: actionName,
+        actionArgs: _.omit(args, ['event'])
+      }
+
+      const { onErrorFlowTo } = event.state.temp
+      const errorFlow = typeof onErrorFlowTo === 'string' && onErrorFlowTo.length ? onErrorFlowTo : 'error.flow.json'
+
+      return ProcessingResult.transition(errorFlow)
+    }
+
     return ProcessingResult.none()
   }
 }

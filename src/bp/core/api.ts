@@ -10,8 +10,10 @@ import { container } from './app.inversify'
 import { ConfigProvider } from './config/config-loader'
 import Database from './database'
 import { LoggerProvider } from './logger'
+import { getMessageSignature } from './misc/security'
+import { renderRecursive } from './misc/templating'
 import { ModuleLoader } from './module-loader'
-import { SessionRepository, UserRepository } from './repositories'
+import { EventRepository, SessionRepository, UserRepository } from './repositories'
 import { Event, RealTimePayload } from './sdk/impl'
 import HTTPServer from './server'
 import { GhostService } from './services'
@@ -19,7 +21,7 @@ import { BotService } from './services/bot-service'
 import { CMSService } from './services/cms'
 import { DialogEngine } from './services/dialog/dialog-engine'
 import { SessionIdFactory } from './services/dialog/session/id-factory'
-import { ScopedGhostService } from './services/ghost/service'
+import { HookService } from './services/hook/hook-service'
 import { KeyValueStore } from './services/kvs'
 import MediaService from './services/media'
 import { EventEngine } from './services/middleware/event-engine'
@@ -27,7 +29,7 @@ import { NotificationsService } from './services/notification/service'
 import RealtimeService from './services/realtime'
 import { TYPES } from './types'
 
-const http = (httpServer: HTTPServer): typeof sdk.http => {
+const http = (httpServer: HTTPServer) => (identity: string): typeof sdk.http => {
   return {
     createShortLink(name: string, destination: string, params?: any): void {
       httpServer.createShortLink(name, destination, params)
@@ -37,7 +39,7 @@ const http = (httpServer: HTTPServer): typeof sdk.http => {
     },
     createRouterForBot(routerName: string, options?: sdk.RouterOptions): any & sdk.http.RouterExtension {
       const defaultRouterOptions = { checkAuthentication: true, enableJsonBodyParser: true }
-      return httpServer.createRouterForBot(routerName, options || defaultRouterOptions)
+      return httpServer.createRouterForBot(routerName, identity, options || defaultRouterOptions)
     },
     deleteRouterForBot: httpServer.deleteRouterForBot.bind(httpServer),
     async getAxiosConfigForBot(botId: string, options?: sdk.AxiosOptions): Promise<any> {
@@ -48,22 +50,26 @@ const http = (httpServer: HTTPServer): typeof sdk.http => {
     },
     decodeExternalToken(token: string): Promise<any> {
       return httpServer.decodeExternalToken(token)
+    },
+    needPermission(operation: string, resource: string): (req: any, res: any, next: any) => Promise<void> {
+      return httpServer.needPermission(operation, resource)
+    },
+    hasPermission(req: any, operation: string, resource: string): Promise<boolean> {
+      return httpServer.hasPermission(req, operation, resource)
     }
   }
 }
 
-const event = (eventEngine: EventEngine): typeof sdk.events => {
+const event = (eventEngine: EventEngine, eventRepo: EventRepository): typeof sdk.events => {
   return {
     registerMiddleware(middleware: sdk.IO.MiddlewareDefinition) {
       eventEngine.register(middleware)
     },
     removeMiddleware: eventEngine.removeMiddleware.bind(eventEngine),
-    sendEvent(event: sdk.IO.Event): void {
-      eventEngine.sendEvent(event)
-    },
-    replyToEvent(eventDestination: sdk.IO.EventDestination, payloads: any[]): void {
-      eventEngine.replyToEvent(eventDestination, payloads)
-    }
+    sendEvent: eventEngine.sendEvent.bind(eventEngine),
+    replyToEvent: eventEngine.replyToEvent.bind(eventEngine),
+    isIncomingQueueEmpty: eventEngine.isIncomingQueueEmpty.bind(eventEngine),
+    findEvents: eventRepo.findEvents.bind(eventRepo)
   }
 }
 
@@ -109,9 +115,7 @@ const bots = (botService: BotService): typeof sdk.bots => {
     exportBot(botId: string): Promise<Buffer> {
       return botService.exportBot(botId)
     },
-    importBot(botId: string, archive: Buffer, allowOverwrite?: boolean): Promise<void> {
-      return botService.importBot(botId, archive, allowOverwrite)
-    }
+    importBot: botService.importBot.bind(botService)
   }
 }
 
@@ -119,6 +123,7 @@ const users = (userRepo: UserRepository): typeof sdk.users => {
   return {
     getOrCreateUser: userRepo.getOrCreate.bind(userRepo),
     updateAttributes: userRepo.updateAttributes.bind(userRepo),
+    getAttributes: userRepo.getAttributes.bind(userRepo),
     setAttributes: userRepo.setAttributes.bind(userRepo),
     getAllUsers: userRepo.getAllUsers.bind(userRepo),
     getUserCount: userRepo.getUserCount.bind(userRepo)
@@ -127,6 +132,12 @@ const users = (userRepo: UserRepository): typeof sdk.users => {
 
 const kvs = (kvs: KeyValueStore): typeof sdk.kvs => {
   return {
+    forBot(botId: string): sdk.KvsService {
+      return kvs.forBot(botId)
+    },
+    global(): sdk.KvsService {
+      return kvs.global()
+    },
     async get(botId: string, key: string, path?: string): Promise<any> {
       return kvs.get(botId, key, path)
     },
@@ -162,15 +173,17 @@ const notifications = (notificationService: NotificationsService): typeof sdk.no
   }
 }
 
+const security = (): typeof sdk.security => {
+  return {
+    getMessageSignature: getMessageSignature
+  }
+}
+
 const ghost = (ghostService: GhostService): typeof sdk.ghost => {
   return {
-    forBot(botId: string): ScopedGhostService {
-      return ghostService.forBot(botId)
-    },
-
-    forGlobal(): ScopedGhostService {
-      return ghostService.global()
-    }
+    forBot: ghostService.forBot.bind(ghostService),
+    forBots: ghostService.bots.bind(ghostService),
+    forGlobal: ghostService.global.bind(ghostService)
   }
 }
 
@@ -195,7 +208,17 @@ const cms = (cmsService: CMSService, mediaService: MediaService): typeof sdk.cms
     },
     getFilePath(botId: string, fileName: string): string {
       return mediaService.getFilePath(botId, fileName)
+    },
+    renderTemplate(templateItem: sdk.cms.TemplateItem, context): sdk.cms.TemplateItem {
+      return renderRecursive(templateItem, context)
     }
+  }
+}
+
+const experimental = (hookService: HookService): typeof sdk.experimental => {
+  return {
+    disableHook: hookService.disableHook.bind(hookService),
+    enableHook: hookService.enableHook.bind(hookService)
   }
 }
 
@@ -212,7 +235,7 @@ export class RealTimeAPI implements RealTimeAPI {
 
 @injectable()
 export class BotpressAPIProvider {
-  http: typeof sdk.http
+  http: (owner: string) => typeof sdk.http
   events: typeof sdk.events
   dialog: typeof sdk.dialog
   config: typeof sdk.config
@@ -225,6 +248,8 @@ export class BotpressAPIProvider {
   ghost: typeof sdk.ghost
   cms: typeof sdk.cms
   mlToolkit: typeof sdk.MLToolkit
+  experimental: typeof sdk.experimental
+  security: typeof sdk.security
 
   constructor(
     @inject(TYPES.DialogEngine) dialogEngine: DialogEngine,
@@ -242,10 +267,12 @@ export class BotpressAPIProvider {
     @inject(TYPES.GhostService) ghostService: GhostService,
     @inject(TYPES.CMSService) cmsService: CMSService,
     @inject(TYPES.ConfigProvider) configProfider: ConfigProvider,
-    @inject(TYPES.MediaService) mediaService: MediaService
+    @inject(TYPES.MediaService) mediaService: MediaService,
+    @inject(TYPES.HookService) hookService: HookService,
+    @inject(TYPES.EventRepository) eventRepo: EventRepository
   ) {
     this.http = http(httpServer)
-    this.events = event(eventEngine)
+    this.events = event(eventEngine, eventRepo)
     this.dialog = dialog(dialogEngine, sessionRepo)
     this.config = config(moduleLoader, configProfider)
     this.realtime = new RealTimeAPI(realtimeService)
@@ -257,10 +284,12 @@ export class BotpressAPIProvider {
     this.ghost = ghost(ghostService)
     this.cms = cms(cmsService, mediaService)
     this.mlToolkit = MLToolkit
+    this.experimental = experimental(hookService)
+    this.security = security()
   }
 
   @Memoize()
-  async create(loggerName: string): Promise<typeof sdk> {
+  async create(loggerName: string, owner: string): Promise<typeof sdk> {
     return {
       version: '',
       RealTimePayload: RealTimePayload,
@@ -274,7 +303,7 @@ export class BotpressAPIProvider {
       MLToolkit: this.mlToolkit,
       dialog: this.dialog,
       events: this.events,
-      http: this.http,
+      http: this.http(owner),
       logger: await this.loggerProvider(loggerName),
       config: this.config,
       database: this.database,
@@ -284,25 +313,27 @@ export class BotpressAPIProvider {
       notifications: this.notifications,
       ghost: this.ghost,
       bots: this.bots,
-      cms: this.cms
+      cms: this.cms,
+      security: this.security,
+      experimental: this.experimental
     }
   }
 }
 
 export function createForModule(moduleId: string): Promise<typeof sdk> {
   // return Promise.resolve(<typeof sdk>{})
-  return container.get<BotpressAPIProvider>(TYPES.BotpressAPIProvider).create(`Mod[${moduleId}]`)
+  return container.get<BotpressAPIProvider>(TYPES.BotpressAPIProvider).create(`Mod[${moduleId}]`, `module.${moduleId}`)
 }
 
 export function createForGlobalHooks(): Promise<typeof sdk> {
   // return Promise.resolve(<typeof sdk>{})
-  return container.get<BotpressAPIProvider>(TYPES.BotpressAPIProvider).create(`Hooks`)
+  return container.get<BotpressAPIProvider>(TYPES.BotpressAPIProvider).create(`Hooks`, 'hooks')
 }
 
 export function createForBotpress(): Promise<typeof sdk> {
-  return container.get<BotpressAPIProvider>(TYPES.BotpressAPIProvider).create(`Botpress`)
+  return container.get<BotpressAPIProvider>(TYPES.BotpressAPIProvider).create(`Botpress`, 'botpress')
 }
 
 export function createForAction(): Promise<typeof sdk> {
-  return container.get<BotpressAPIProvider>(TYPES.BotpressAPIProvider).create('Actions')
+  return container.get<BotpressAPIProvider>(TYPES.BotpressAPIProvider).create('Actions', 'actions')
 }

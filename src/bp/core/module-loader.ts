@@ -1,28 +1,26 @@
 import {
   BotTemplate,
+  ContentElement,
+  ElementChangedAction,
   Flow,
   Logger,
   ModuleDefinition,
   ModuleEntryPoint,
-  Skill,
-  ContentElement,
-  ElementChangedAction
+  Skill
 } from 'botpress/sdk'
 import { ValidationError } from 'errors'
-
 import { inject, injectable, tagged } from 'inversify'
 import joi from 'joi'
 import { AppLifecycle, AppLifecycleEvents } from 'lifecycle'
 import _ from 'lodash'
 
 import { createForModule } from './api' // TODO
-
+import ModuleResolver from './modules/resolver'
 import { GhostService } from './services'
+import { BotService } from './services/bot-service'
 import ConfigReader from './services/module/config-reader'
 import { ModuleResourceLoader } from './services/module/resources-loader'
 import { TYPES } from './types'
-import ModuleResolver from './modules/resolver'
-import { BotService } from './services/bot-service'
 
 const MODULE_SCHEMA = joi.object().keys({
   onServerStarted: joi.func().required(),
@@ -53,7 +51,8 @@ const MODULE_SCHEMA = joi.object().keys({
       }),
     menuIcon: joi.string().optional(),
     menuText: joi.string().optional(),
-    homepage: joi.string().optional()
+    homepage: joi.string().optional(),
+    experimental: joi.boolean().optional()
   })
 })
 
@@ -116,8 +115,16 @@ export class ModuleLoader {
       initedModules[name] = await this._loadModule(module, name)
     }
 
+    // tslint:disable-next-line: no-floating-promises
     this.callModulesOnReady(modules, initedModules) // Floating promise here is on purpose, we are doing this in background
     return Object.keys(initedModules)
+  }
+
+  public async disableModuleResources(modules: string[]) {
+    for (const module of modules) {
+      const resourceLoader = new ModuleResourceLoader(this.logger, module, this.ghost)
+      await resourceLoader.disableResources()
+    }
   }
 
   public async reloadModule(moduleLocation: string, moduleName: string) {
@@ -149,6 +156,8 @@ export class ModuleLoader {
       this.entryPoints.set(name, module)
 
       const resourceLoader = new ModuleResourceLoader(this.logger, name, this.ghost)
+      await resourceLoader.enableResources()
+      await resourceLoader.runMigrations()
       await resourceLoader.importResources()
     } catch (err) {
       this.logger.attachError(err).error(`Error in module "${name}" onServerStarted`)
@@ -239,13 +248,12 @@ export class ModuleLoader {
   }
 
   public getBotTemplates(): BotTemplate[] {
-    const templates = Array.from(this.entryPoints.values())
-      .filter(module => module.botTemplates)
-      .map(module => {
-        return module.botTemplates!.map(template => {
-          return { ...template, moduleId: module.definition.name, moduleName: module.definition.fullName }
-        })
+    const modules = Array.from(this.entryPoints.values())
+    const templates = modules.filter(module => module.botTemplates).map(module => {
+      return module.botTemplates!.map(template => {
+        return { ...template, moduleId: module.definition.name, moduleName: module.definition.fullName }
       })
+    })
 
     return _.flatten(templates)
   }
